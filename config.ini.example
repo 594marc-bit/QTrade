@@ -1,0 +1,19 @@
+# QTrade Configuration
+# Copy this file to config.ini and fill in your settings.
+# config.ini is ignored by git — your tokens are safe.
+
+[data]
+# Data source: "akshare" (default) or "tushare"
+# - akshare: Free, no token needed. Uses East Money API (may be rate-limited).
+# - tushare: Requires token. More stable, higher data quality.
+data_source = akshare
+
+[tushare]
+# Tushare Pro API Token
+# Register at https://tushare.pro to get your token.
+# Required when data_source = tushare.
+token =
+
+# Fetch interval in seconds (Tushare default: 0.5)
+# Lower values may trigger rate limiting (120 requests/min for free accounts).
+fetch_interval = 0.5
