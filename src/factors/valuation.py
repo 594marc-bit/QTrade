@@ -10,6 +10,8 @@ from src.factors.base import FactorBase, register_factor
 class PeFactor(FactorBase):
     factor_name = "pe_ttm_rank"
     description = "Cross-sectional percentile rank of PE_TTM (low = undervalued)"
+    description_cn = "PE_TTM截面百分位排名"
+    category = "估值类"
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -21,6 +23,8 @@ class PeFactor(FactorBase):
 class PbFactor(FactorBase):
     factor_name = "pb_rank"
     description = "Cross-sectional percentile rank of PB (low = undervalued)"
+    description_cn = "PB截面百分位排名"
+    category = "估值类"
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()

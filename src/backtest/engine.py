@@ -278,6 +278,8 @@ class BacktestEngine:
 
         # Build result
         nav_df = pd.DataFrame(nav_records)
+        if nav_df.empty:
+            raise ValueError("回测无有效交易日数据，请检查回测日期区间是否有对应数据")
         nav_series = nav_df.set_index("date")["nav"]
         nav_series.index = pd.to_datetime(nav_series.index)
 

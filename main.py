@@ -48,6 +48,8 @@ import src.factors.ma_deviation
 import src.factors.turnover
 import src.factors.intraday_range
 import src.factors.valuation
+import src.factors.return_20d
+import src.factors.trend_60d
 
 
 def run_pipeline(

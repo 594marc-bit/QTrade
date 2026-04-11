@@ -55,7 +55,7 @@ def get_index_constituents(index_code: str = INDEX_CODE) -> pd.DataFrame:
     """
     import pickle
 
-    cache_path = DATA_DIR / "hs300_constituents_tushare.pkl"
+    cache_path = DATA_DIR / f"{index_code}_constituents_tushare.pkl"
 
     # Check cache
     if cache_path.exists():

@@ -11,6 +11,8 @@ from src.factors.base import FactorBase, register_factor
 class VolumeFactor(FactorBase):
     factor_name = "vol_ratio"
     description = "5-day / 20-day average amount ratio"
+    description_cn = "5日/20日成交额比率"
+    category = "量价类"
 
     def __init__(
         self,

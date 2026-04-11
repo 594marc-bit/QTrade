@@ -11,6 +11,8 @@ from src.factors.base import FactorBase, register_factor
 class TurnoverFactor(FactorBase):
     factor_name = "turnover_momentum_10d"
     description = "5d/20d average volume ratio (volume surge detection)"
+    description_cn = "换手率动量（5日/20日成交量比）"
+    category = "量价类"
 
     def __init__(
         self,

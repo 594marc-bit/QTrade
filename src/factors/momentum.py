@@ -10,6 +10,8 @@ from src.factors.base import FactorBase, register_factor
 class MomentumFactor(FactorBase):
     factor_name = "momentum_20d"
     description = "20-day price return (momentum)"
+    description_cn = "20日价格动量"
+    category = "量价类"
 
     def __init__(self, lookback: int = MOMENTUM_LOOKBACK):
         self.lookback = lookback

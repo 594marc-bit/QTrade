@@ -11,6 +11,8 @@ from src.factors.base import FactorBase, register_factor
 class MaDeviationFactor(FactorBase):
     factor_name = "ma_deviation_20d"
     description = "Price deviation from 20-day MA (mean reversion)"
+    description_cn = "价格偏离20日均线"
+    category = "量价类"
 
     def __init__(self, window: int = MA_DEVIATION_WINDOW):
         self.window = window

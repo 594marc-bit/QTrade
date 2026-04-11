@@ -62,6 +62,7 @@ def compute_metrics(
         "win_rate": win_rate,
         "trade_count": 0,  # Filled by engine
         "n_days": n_days,
+        "final_nav": float(nav_series.iloc[-1]),
     }
 
     # Benchmark comparison

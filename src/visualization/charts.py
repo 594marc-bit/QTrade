@@ -254,6 +254,7 @@ def generate_all_charts(
     ic_results: dict[str, dict],
     factor_cols: list[str],
     code2name: dict[str, str] | None = None,
+    output_dir: Path | None = None,
 ) -> list[str]:
     """Generate all factor analysis charts.
 
@@ -263,10 +264,13 @@ def generate_all_charts(
             Each value has 'ic_series' key.
         factor_cols: List of raw factor column names.
         code2name: Optional ts_code → name mapping.
+        output_dir: Custom output directory. Defaults to CHARTS_DIR.
 
     Returns:
         List of saved file paths.
     """
+    d = output_dir or CHARTS_DIR
+    d.mkdir(parents=True, exist_ok=True)
     saved = []
 
     # 1. IC timeseries
@@ -274,7 +278,7 @@ def generate_all_charts(
     if len(ic_data) > 0:
         total_points = sum(len(s.dropna()) for s in ic_data.values())
         if total_points >= 10:
-            path = plot_ic_timeseries(ic_data)
+            path = plot_ic_timeseries(ic_data, save_path=d / "ic_timeseries.png")
             saved.append(path)
             print(f"  IC 时序图: {path}")
         else:
@@ -282,19 +286,19 @@ def generate_all_charts(
 
     # 2. Score distribution
     if "total_score" in df.columns:
-        path = plot_score_distribution(df)
+        path = plot_score_distribution(df, save_path=d / "score_distribution.png")
         saved.append(path)
         print(f"  评分分布图: {path}")
 
     # 3. Top 10 stocks
     if "total_score" in df.columns:
-        path = plot_top10_stocks(df, code2name)
+        path = plot_top10_stocks(df, code2name, save_path=d / "top10_stocks.png")
         saved.append(path)
         print(f"  Top 10 图表: {path}")
 
     # 4. Factor correlation
     if len(factor_cols) >= 2:
-        path = plot_factor_correlation(df, factor_cols)
+        path = plot_factor_correlation(df, factor_cols, save_path=d / "factor_correlation.png")
         saved.append(path)
         print(f"  因子相关性图: {path}")
 

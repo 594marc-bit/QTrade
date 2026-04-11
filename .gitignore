@@ -1,6 +1,9 @@
 # Local configuration (contains API tokens)
 config.ini
 
+# Environment variables (API tokens)
+.env
+
 # Python
 __pycache__/
 *.py[cod]
@@ -9,10 +12,11 @@ dist/
 build/
 .eggs/
 
-# Data files
-data/*.db
-data/*.csv
-data/*.pkl
+# Data files (runtime cache)
+data/
+
+# OpenSpec
+openspec/
 
 # IDE
 .idea/

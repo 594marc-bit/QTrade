@@ -14,6 +14,8 @@ class FactorBase(ABC):
     # Subclasses should override these
     factor_name: str = ""
     description: str = ""
+    description_cn: str = ""
+    category: str = "其他"
 
     @abstractmethod
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:

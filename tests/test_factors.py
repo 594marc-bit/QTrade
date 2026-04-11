@@ -10,7 +10,7 @@ import pytest
 @pytest.fixture
 def sample_price_df():
     """Create sample price data for factor testing."""
-    dates = pd.date_range("2023-01-03", periods=60, freq="B").strftime("%Y%m%d")
+    dates = pd.date_range("2023-01-03", periods=80, freq="B").strftime("%Y%m%d")
     rows = []
     np.random.seed(42)
     for code in [
@@ -430,3 +430,116 @@ class TestICAnalyzer:
         assert result["summary"]["ic_direction"] == -1
         assert result["is_effective"] == True
         assert result["verdict"] == "有效"
+
+
+# --- Return 20d Factor Tests ---
+
+class TestReturn20dFactor:
+    def test_calculates_return(self, sample_price_df):
+        from src.factors.return_20d import Return20dFactor
+        factor = Return20dFactor()
+        result = factor.calculate(sample_price_df)
+        assert "return_20d" in result.columns
+
+        # First 20 rows per stock should be NaN
+        for code in result["ts_code"].unique():
+            stock = result[result["ts_code"] == code]
+            assert stock["return_20d"].iloc[:20].isna().all()
+            assert stock["return_20d"].iloc[20:].notna().any()
+
+    def test_matches_manual_calculation(self):
+        """Verify return_20d matches (close - close_20d_ago) / close_20d_ago."""
+        from src.factors.return_20d import Return20dFactor
+        dates = pd.date_range("2023-01-03", periods=25, freq="B").strftime("%Y%m%d")
+        prices = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0,
+                  110.0, 111.0, 112.0, 113.0, 114.0, 115.0, 116.0, 117.0, 118.0, 119.0,
+                  120.0, 121.0, 122.0, 123.0, 124.0]
+        df = pd.DataFrame({
+            "trade_date": dates,
+            "ts_code": "TEST.SH",
+            "close": prices,
+        })
+        factor = Return20dFactor()
+        result = factor.calculate(df)
+        # Row 20 (index 20): close=120, close 20 ago=100 → (120-100)/100 = 0.2
+        row_20 = result.iloc[20]
+        assert abs(row_20["return_20d"] - 0.2) < 1e-10
+
+
+# --- Trend 60d Factor Tests ---
+
+class TestTrend60dFactor:
+    def test_calculates_trend(self, sample_price_df):
+        from src.factors.trend_60d import Trend60dFactor
+        factor = Trend60dFactor()
+        result = factor.calculate(sample_price_df)
+        assert "trend_60d" in result.columns
+
+        # First 64 rows per stock should be NaN (60 for MA60 + 5 for slope shift)
+        for code in result["ts_code"].unique():
+            stock = result[result["ts_code"] == code]
+            assert stock["trend_60d"].iloc[:64].isna().all()
+            assert stock["trend_60d"].iloc[64:].notna().any()
+
+    def test_uptrend_positive(self):
+        """Steadily rising prices should produce positive trend_60d."""
+        from src.factors.trend_60d import Trend60dFactor
+        dates = pd.date_range("2023-01-03", periods=80, freq="B").strftime("%Y%m%d")
+        prices = [100.0 + i * 0.5 for i in range(80)]
+        df = pd.DataFrame({
+            "trade_date": dates,
+            "ts_code": "UP.SH",
+            "close": prices,
+        })
+        factor = Trend60dFactor()
+        result = factor.calculate(df)
+        valid = result["trend_60d"].dropna()
+        assert all(valid > 0)
+
+    def test_flat_trend_near_zero(self):
+        """Flat prices should produce trend_60d near zero."""
+        from src.factors.trend_60d import Trend60dFactor
+        dates = pd.date_range("2023-01-03", periods=80, freq="B").strftime("%Y%m%d")
+        df = pd.DataFrame({
+            "trade_date": dates,
+            "ts_code": "FLAT.SH",
+            "close": [100.0] * 80,
+        })
+        factor = Trend60dFactor()
+        result = factor.calculate(df)
+        valid = result["trend_60d"].dropna()
+        assert all(abs(v) < 1e-10 for v in valid)
+
+
+# --- New Factor Registration Tests ---
+
+class TestNewFactorRegistration:
+    def test_return_20d_registered(self):
+        import src.factors.return_20d
+        from src.factors.base import get_registered_factors
+        registry = get_registered_factors()
+        assert "return_20d" in registry
+        assert registry["return_20d"].category == "量价类"
+
+    def test_trend_60d_registered(self):
+        import src.factors.trend_60d
+        from src.factors.base import get_registered_factors
+        registry = get_registered_factors()
+        assert "trend_60d" in registry
+        assert registry["trend_60d"].category == "量价类"
+
+    def test_total_factor_count(self):
+        """Verify total registered factors is 11 (9 original + 2 new)."""
+        import src.factors.momentum
+        import src.factors.volume
+        import src.factors.volatility
+        import src.factors.rsi
+        import src.factors.ma_deviation
+        import src.factors.turnover
+        import src.factors.intraday_range
+        import src.factors.valuation
+        import src.factors.return_20d
+        import src.factors.trend_60d
+        from src.factors.base import get_registered_factors
+        registry = get_registered_factors()
+        assert len(registry) == 11

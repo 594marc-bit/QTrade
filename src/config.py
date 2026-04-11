@@ -4,6 +4,11 @@ import configparser
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load .env file (API tokens) — silent if missing
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -53,7 +58,8 @@ INDEX_CODE = "000300"  # 沪深300
 DATA_SOURCE = _config.get("data", "data_source", fallback="akshare").lower().strip()
 
 # Tushare configuration
-TUSHARE_TOKEN = _config.get("tushare", "token", fallback="").strip()
+# Priority: .env (TUSHARE_TOKEN) > config.ini [tushare] token
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "").strip() or _config.get("tushare", "token", fallback="").strip()
 TUSHARE_FETCH_INTERVAL = float(_config.get("tushare", "fetch_interval", fallback="0.5"))
 
 # Cache settings
@@ -80,15 +86,11 @@ INTRADAY_RANGE_WINDOW = 10
 
 # Scoring weights
 DEFAULT_WEIGHTS = {
-    "momentum_score": 0.15,
-    "vol_score": 0.1,
-    "volatility_score": -0.1,
-    "rsi_score": -0.2,
-    "ma_deviation_score": -0.2,
-    "turnover_momentum_score": -0.15,
-    "intraday_range_score": -0.1,
-    "pe_ttm_rank_score": -0.15,
-    "pb_rank_score": -0.1,
+    "intraday_range_score": -0.15,
+    "pb_rank_score": -0.25,
+    "pe_ttm_rank_score": -0.20,
+    "trend_score": -0.10,
+    "volatility_score": -0.15,
 }
 
 # IC analysis

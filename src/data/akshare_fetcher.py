@@ -35,7 +35,7 @@ def get_index_constituents(index_code: str = INDEX_CODE) -> pd.DataFrame:
     Returns:
         DataFrame with columns: ts_code, name
     """
-    cache_path = DATA_DIR / "hs300_constituents.pkl"
+    cache_path = DATA_DIR / f"{index_code}_constituents.pkl"
 
     # Check cache
     if cache_path.exists():

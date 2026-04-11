@@ -56,14 +56,14 @@ class TestAdaptiveWeights:
 
         dates = pd.date_range("2025-01-01", periods=80, freq="B").strftime("%Y%m%d")
         np.random.seed(42)
-        # RSI has negative weight in DEFAULT_WEIGHTS
+        # pe_ttm_rank has negative weight in DEFAULT_WEIGHTS
         ic_df = pd.DataFrame({
             "trade_date": dates,
-            "rsi_14d": np.random.randn(80) * 0.05,
+            "pe_ttm_rank": np.random.randn(80) * 0.05,
         })
         weights = compute_adaptive_weights(ic_df, window=60)
-        # rsi_score should be negative (like DEFAULT_WEIGHTS)
-        assert weights.get("rsi_score", 0) < 0
+        # pe_ttm_rank_score should be negative (like DEFAULT_WEIGHTS)
+        assert weights.get("pe_ttm_rank_score", 0) < 0
 
 
 # === Industry Neutral Tests ===

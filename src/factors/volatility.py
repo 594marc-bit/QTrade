@@ -10,6 +10,8 @@ from src.factors.base import FactorBase, register_factor
 class VolatilityFactor(FactorBase):
     factor_name = "volatility_20d"
     description = "20-day return standard deviation (volatility)"
+    description_cn = "20日收益率标准差"
+    category = "波动率类"
 
     def __init__(self, window: int = VOLATILITY_WINDOW):
         self.window = window

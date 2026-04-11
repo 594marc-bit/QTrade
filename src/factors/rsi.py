@@ -11,6 +11,8 @@ from src.factors.base import FactorBase, register_factor
 class RsiFactor(FactorBase):
     factor_name = "rsi_14d"
     description = "14-day RSI (Wilder's smoothing)"
+    description_cn = "14日相对强弱指标"
+    category = "波动率类"
 
     def __init__(self, window: int = RSI_WINDOW):
         self.window = window

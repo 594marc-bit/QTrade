@@ -11,6 +11,8 @@ from src.factors.base import FactorBase, register_factor
 class IntradayRangeFactor(FactorBase):
     factor_name = "intraday_range_10d"
     description = "10-day avg intraday range (high-low)/close"
+    description_cn = "10日均日内振幅"
+    category = "波动率类"
 
     def __init__(self, window: int = INTRADAY_RANGE_WINDOW):
         self.window = window
