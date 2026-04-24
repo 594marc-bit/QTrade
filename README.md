@@ -15,7 +15,8 @@
 - **风控** — 个股止损/止盈、组合最大回撤止损、冷冻期
 - **仓位管理** — 等权 / 评分加权 / 风险平价
 - **行业中性** — 可选约束单行业持仓上限
-- **可视化** — 自动生成因子分布、IC 衰减、回测净值等图表
+- **方案配置** — 保存/加载因子组合与权重方案（`schemes.yaml`），支持 CLI 和向导模式
+- **可视化** — 自动生成因子分布、IC 衰减、回测净值、交易标注、收益分布直方图、年度收益对比等图表
 
 ## 快速开始
 
@@ -68,6 +69,16 @@ python run.py \
   --stop-loss -0.08 --take-profit 0.15 --max-drawdown -0.10 --cooldown-days 5
 ```
 
+使用方案配置：
+
+```bash
+# 加载预设方案运行
+python run.py --scheme momentum --index 000300 --start 20240101 --end 20260411
+
+# 方案 + 自定义因子（--factors 优先，权重仍使用方案配置）
+python run.py --scheme momentum --factors momentum_20d,rsi_14d --index 000300 --start 20240101
+```
+
 ## 项目结构
 
 ```
@@ -75,6 +86,7 @@ QTrade/
 ├── run.py                  # 入口：交互式向导 / 命令行模式
 ├── main.py                 # 非交互式批量入口
 ├── config.ini.example      # 配置模板
+├── schemes.yaml            # 方案配置（因子组合与权重）
 ├── requirements.txt
 ├── src/
 │   ├── config.py           # 全局配置
@@ -105,6 +117,7 @@ QTrade/
 │   │   ├── valuation.py    # 估值因子（PE/PB）
 │   │   ├── return_20d.py   # 20日收益因子
 │   │   └── trend_60d.py    # 60日趋势因子
+│   ├── scheme.py           # 方案配置管理
 │   ├── backtest/           # 回测引擎
 │   │   ├── engine.py       # 回测主循环
 │   │   ├── portfolio.py    # 持仓管理
@@ -141,6 +154,7 @@ QTrade/
 | `--max-industry-pct` | 单行业持仓上限 | 0.30 |
 | `--backtest-start` | 回测起始日期 | 使用数据全量 |
 | `--backtest-end` | 回测结束日期 | 使用数据全量 |
+| `--scheme` | 加载方案名称（从 schemes.yaml） | 无 |
 
 ## 注意事项
 

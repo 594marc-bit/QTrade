@@ -59,35 +59,65 @@ def main():
     parser.add_argument("--position-sizing", type=str,
                         choices=["equal_weight", "score_weighted", "risk_parity"],
                         help="仓位管理方式")
+    parser.add_argument("--scheme", type=str, help="方案名称 (从 schemes.yaml 加载因子和权重)")
     parser.add_argument("--backtest-start", type=str, help="回测起始日期 (YYYYMMDD)，默认使用数据全量范围")
     parser.add_argument("--backtest-end", type=str, help="回测结束日期 (YYYYMMDD)，默认使用数据全量范围")
+    parser.add_argument("--yes", "-y", action="store_true", help="跳过所有确认提示，自动执行回测")
 
     args = parser.parse_args()
 
     # Build CLI args dict (only non-None values)
     cli_args = {k: v for k, v in vars(args).items() if v is not None}
 
-    # Determine mode
+    # Determine mode — scheme can also enable full CLI mode
     has_any_arg = bool(cli_args)
-    is_full_cli = all(k in cli_args for k in ["index", "start", "end", "source", "factors"])
+    has_scheme = "scheme" in cli_args
+    is_full_cli = (
+        all(k in cli_args for k in ["index", "start", "end", "source"])
+        and ("factors" in cli_args or has_scheme)
+    )
 
     if is_full_cli:
         # Full command-line mode — no interaction needed
         from src.cli.wizard import WizardConfig, run_pipeline
+        from src.scheme import load_scheme, list_schemes
 
         cfg = WizardConfig()
         cfg.index_code = cli_args["index"]
         cfg.start_date = cli_args["start"]
         cfg.end_date = cli_args["end"]
         cfg.data_source = cli_args["source"]
-        cfg.enabled_factors = set(cli_args["factors"].split(","))
 
-        # Initialize weights from defaults
+        # Load scheme if specified
+        scheme_factors = None
+        scheme_weights = None
+        if has_scheme:
+            scheme_name = cli_args["scheme"]
+            try:
+                scheme_factors, scheme_weights = load_scheme(scheme_name)
+            except ValueError as e:
+                print(f"错误: {e}")
+                sys.exit(1)
+
+        # Factors: --factors takes priority over scheme
+        if "factors" in cli_args:
+            cfg.enabled_factors = set(cli_args["factors"].split(","))
+        elif scheme_factors is not None:
+            cfg.enabled_factors = scheme_factors
+        else:
+            cfg.enabled_factors = set()
+
+        # Initialize weights: scheme weights first, then defaults for missing
         from src.factors.scorer import _factor_to_score_col
         from src.config import DEFAULT_WEIGHTS
+
+        if scheme_weights is not None:
+            cfg.weights = dict(scheme_weights)
+        # Fill in missing weights from defaults
         for name in cfg.enabled_factors:
             score_col = _factor_to_score_col(name)
-            cfg.weights[score_col] = DEFAULT_WEIGHTS.get(score_col, 0.0)
+            if score_col not in cfg.weights:
+                cfg.weights[score_col] = DEFAULT_WEIGHTS.get(score_col, 0.0)
 
         if "capital" in cli_args:
             cfg.initial_capital = cli_args["capital"]
@@ -125,6 +155,10 @@ def main():
             cfg.backtest_start = cli_args["backtest_start"]
         if "backtest_end" in cli_args:
             cfg.backtest_end = cli_args["backtest_end"]
+
+        # Auto-confirm
+        if cli_args.get("yes"):
+            cfg.auto_confirm = True
 
         run_pipeline(cfg)
     else:

@@ -37,6 +37,7 @@ from src.config import (
 )
 from src.factors.base import get_registered_factors
 from src.factors.scorer import _factor_to_score_col
+from src.scheme import list_schemes, load_scheme, save_scheme
 
 # Import all factor modules to trigger registration
 import src.factors.momentum
@@ -69,7 +70,7 @@ class WizardConfig:
         self.start_date: str = "20230101"
         self.end_date: str = date.today().strftime("%Y%m%d")
         self.refresh_data: bool = True
-        self.data_source: str = "akshare"
+        self.data_source: str = "tushare"
         self.enabled_factors: set[str] = {"intraday_range_10d", "pb_rank", "pe_ttm_rank", "trend_60d", "volatility_20d"}
         self.weights: dict[str, float] = {}
         self.do_scoring: bool = True
@@ -77,7 +78,7 @@ class WizardConfig:
         self.top_n: int = 20
         self.rebalance_freq: str = "M"
         self.risk_control_enabled: bool = False
-        self.stop_loss: float = -0.08
+        self.stop_loss: float = -0.12
         self.take_profit: float = 0.15
         self.max_drawdown_stop: float = -0.10
         self.cooldown_days: int = 5
@@ -88,6 +89,7 @@ class WizardConfig:
         self.max_industry_pct: float = 0.30
         self.backtest_start: str | None = None
         self.backtest_end: str | None = None
+        self.auto_confirm: bool = False
 
 
 def step_index(cfg: WizardConfig) -> None:
@@ -164,6 +166,90 @@ def step_data_source(cfg: WizardConfig) -> None:
         cfg.data_source = "akshare"
 
     console.print(f"  [green]数据源: {cfg.data_source}[/green]")
+
+
+def step_scheme_selection(cfg: WizardConfig) -> bool:
+    """Step 5: Load a scheme (factor+weight preset).
+
+    Returns True if a scheme was loaded, False if skipped.
+    If True, cfg.enabled_factors and cfg.weights are populated.
+    """
+    from src.scheme import ensure_schemes_file
+
+    ensure_schemes_file()
+    schemes = list_schemes()
+
+    if not schemes:
+        console.print("  [dim]无可用方案，将手动配置因子和权重[/dim]")
+        return False
+
+    console.print("\n[bold cyan]方案选择[/]")
+    console.print("  [dim]可从已保存的方案中加载因子和权重配置[/dim]")
+
+    if not confirm("是否加载已有方案？", default=False):
+        return False
+
+    # List available schemes
+    names = sorted(schemes.keys())
+    options = [f"{name} — {desc}" if desc else name for name, desc in
+               ((n, schemes[n]) for n in names)]
+    options.append("取消 (手动配置)")
+
+    choice = select("选择方案", options, default=len(options))
+    if choice == len(options):
+        return False
+
+    scheme_name = names[choice - 1]
+    try:
+        factors, weights = load_scheme(scheme_name)
+    except ValueError as e:
+        console.print(f"  [red]{e}[/red]")
+        return False
+
+    cfg.enabled_factors = factors
+    cfg.weights = dict(weights)
+
+    # Fill missing weights from defaults
+    for name in factors:
+        score_col = _factor_to_score_col(name)
+        if score_col not in cfg.weights:
+            cfg.weights[score_col] = DEFAULT_WEIGHTS.get(score_col, 0.0)
+
+    console.print(f"  [green]已加载方案: {scheme_name}[/green]")
+    console.print(f"  [dim]因子: {', '.join(sorted(factors))}[/dim]")
+    console.print(f"  [dim]权重: {', '.join(f'{k}={v:+.2f}' for k, v in sorted(weights.items()))}[/dim]")
+    return True
+
+
+def step_save_scheme(cfg: WizardConfig) -> None:
+    """Ask whether to save current config as a scheme."""
+    console.print("\n[bold cyan]保存方案[/]")
+    console.print("  [dim]可将当前因子和权重配置保存为方案，方便下次使用[/dim]")
+
+    if not confirm("是否保存当前配置为方案？", default=False):
+        return
+
+    name = input_value("方案名称 (英文，如 my_strategy)", default="").strip()
+    if not name:
+        console.print("  [yellow]方案名为空，跳过保存[/yellow]")
+        return
+
+    # Check for overwrite
+    existing = list_schemes()
+    if name in existing:
+        if not confirm(f"  方案 '{name}' 已存在，是否覆盖？", default=False):
+            console.print("  [yellow]跳过保存[/yellow]")
+            return
+
+    description = input_value("方案描述", default="").strip()
+
+    save_scheme(
+        name=name,
+        description=description,
+        factors=cfg.enabled_factors,
+        weights=cfg.weights,
+    )
+    console.print(f"  [green]方案 '{name}' 已保存[/green]")
 
 
 def step_factor_selection(cfg: WizardConfig) -> None:
@@ -542,7 +628,7 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
         ic_results = {}
 
     # Step 7: Backtest
-    if cfg.do_scoring and confirm("\n是否运行回测？", default=True):
+    if cfg.do_scoring and (cfg.auto_confirm or confirm("\n是否运行回测？", default=True)):
         console.print("\n[bold green]▶ 运行回测...[/]")
 
         # Filter by backtest date range (after factor calculation for warmup)
@@ -767,6 +853,23 @@ def run_wizard(cli_args: dict[str, Any] | None = None) -> None:
     if "backtest_end" in cli_args:
         cfg.backtest_end = cli_args["backtest_end"]
 
+    # Pre-load scheme from CLI --scheme arg
+    scheme_loaded_from_cli = False
+    if cli_args.get("scheme"):
+        from src.scheme import ensure_schemes_file
+        ensure_schemes_file()
+        try:
+            factors, weights = load_scheme(cli_args["scheme"])
+            cfg.enabled_factors = factors
+            cfg.weights = dict(weights)
+            for name in factors:
+                score_col = _factor_to_score_col(name)
+                if score_col not in cfg.weights:
+                    cfg.weights[score_col] = DEFAULT_WEIGHTS.get(score_col, 0.0)
+            scheme_loaded_from_cli = True
+        except ValueError as e:
+            console.print(f"  [red]{e}[/red]")
+
     # Interactive steps (skip if CLI arg provided)
     console.print("\n[bold]═══ 第 1 步: 股票范围 ═══[/bold]")
     if "index" not in cli_args:
@@ -789,16 +892,37 @@ def run_wizard(cli_args: dict[str, Any] | None = None) -> None:
     else:
         console.print(f"  [green]已指定: {cfg.data_source}[/green]")
 
-    console.print("\n[bold]═══ 第 5 步: 因子选择 ═══[/bold]")
-    step_factor_selection(cfg)
+    # Step 5: Scheme selection (skip if loaded from CLI or --factors provided)
+    scheme_loaded = scheme_loaded_from_cli
+    if not scheme_loaded and not cli_args.get("factors"):
+        console.print("\n[bold]═══ 第 5 步: 方案选择 ═══[/bold]")
+        scheme_loaded = step_scheme_selection(cfg)
 
-    console.print("\n[bold]═══ 第 6 步: 权重配置 ═══[/bold]")
-    step_weight_config(cfg)
+    # Step 6: Factor selection (skip if scheme loaded and user doesn't want to adjust)
+    skip_factor_weight = False
+    if scheme_loaded:
+        console.print("\n[bold]═══ 第 6 步: 因子 & 权重 ═══[/bold]")
+        console.print("  [dim]已从方案加载因子和权重[/dim]")
+        skip_factor_weight = not confirm("是否调整因子和权重？", default=False)
 
-    console.print("\n[bold]═══ 第 7 步: 评分计算 ═══[/bold]")
+    if not skip_factor_weight:
+        console.print("\n[bold]═══ 第 6 步: 因子选择 ═══[/bold]")
+        step_factor_selection(cfg)
+
+        console.print("\n[bold]═══ 第 7 步: 权重配置 ═══[/bold]")
+        step_weight_config(cfg)
+
+        # Offer to save as scheme after configuring factors/weights
+        step_save_scheme(cfg)
+    else:
+        # Show loaded config summary
+        factors = get_registered_factors()
+        show_factor_table(factors, cfg.enabled_factors, cfg.weights)
+
+    console.print("\n[bold]═══ 第 8 步: 评分计算 ═══[/bold]")
     step_scoring(cfg)
 
-    console.print("\n[bold]═══ 第 8 步: 回测参数 ═══[/bold]")
+    console.print("\n[bold]═══ 第 9 步: 回测参数 ═══[/bold]")
     step_backtest_params(cfg)
 
     # Show parameter summary before execution

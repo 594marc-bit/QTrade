@@ -55,7 +55,7 @@ else:
 INDEX_CODE = "000300"  # 沪深300
 
 # Data source: "akshare" or "tushare"
-DATA_SOURCE = _config.get("data", "data_source", fallback="akshare").lower().strip()
+DATA_SOURCE = _config.get("data", "data_source", fallback="tushare").lower().strip()
 
 # Tushare configuration
 # Priority: .env (TUSHARE_TOKEN) > config.ini [tushare] token
@@ -108,7 +108,7 @@ BACKTEST_RISK_FREE_RATE = float(_config.get("backtest", "risk_free_rate", fallba
 
 # Risk control settings
 RISK_CONTROL_ENABLED = _config.get("risk_control", "enabled", fallback="false").strip().lower() == "true"
-RISK_CONTROL_STOP_LOSS = float(_config.get("risk_control", "stop_loss", fallback="-0.08"))
+RISK_CONTROL_STOP_LOSS = float(_config.get("risk_control", "stop_loss", fallback="-0.12"))
 RISK_CONTROL_TAKE_PROFIT = float(_config.get("risk_control", "take_profit", fallback="0.15"))
 RISK_CONTROL_MAX_DRAWDOWN_STOP = float(_config.get("risk_control", "max_drawdown_stop", fallback="-0.10"))
 RISK_CONTROL_COOLDOWN_DAYS = int(_config.get("risk_control", "cooldown_days", fallback="5"))
