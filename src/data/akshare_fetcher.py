@@ -69,6 +69,45 @@ def get_index_constituents(index_code: str = INDEX_CODE) -> pd.DataFrame:
     return df
 
 
+def get_all_stocks() -> pd.DataFrame:
+    """Get all listed A-share stocks via AKShare.
+
+    Returns:
+        DataFrame with columns: ts_code, name.
+    """
+    cache_path = DATA_DIR / "all_stocks_akshare.pkl"
+
+    # Check cache
+    if cache_path.exists():
+        cache_time = datetime.fromtimestamp(cache_path.stat().st_mtime)
+        if datetime.now() - cache_time < timedelta(days=CACHE_EXPIRE_DAYS):
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+
+    df = ak.stock_info_a_code_name()
+    df = df.rename(columns={
+        "code": "ts_code",
+        "name": "name",
+    })
+
+    # Convert code format: 600519 -> 600519.SH / 000858 -> 000858.SZ
+    def _format_code(code):
+        code = str(code).zfill(6)
+        if code.startswith(("6",)):
+            return f"{code}.SH"
+        else:
+            return f"{code}.SZ"
+
+    df["ts_code"] = df["ts_code"].apply(_format_code)
+    df = df[["ts_code", "name"]]
+
+    # Save cache
+    with open(cache_path, "wb") as f:
+        pickle.dump(df, f)
+
+    return df
+
+
 def get_stock_daily(
     ts_code: str,
     start_date: str = START_DATE,
@@ -431,3 +470,9 @@ def get_index_daily(
         return result
     except Exception:
         return pd.DataFrame()
+
+
+
+def fetch_fina_indicator(ts_codes, start_date=None, end_date=None):
+    """Stub: not implemented for AKShare backend."""
+    return pd.DataFrame()

@@ -57,6 +57,9 @@ class Portfolio:
     cooldown: dict = field(default_factory=dict)  # ts_code -> cooldown_until_date
     peak_nav: float = 0.0
 
+    # Last-known price cache for data_gap fallback
+    _last_price: dict = field(default_factory=dict)
+
     def __post_init__(self):
         if self.cash is None:
             self.cash = self.initial_capital
@@ -72,13 +75,24 @@ class Portfolio:
     def market_value(self, prices: dict[str, float]) -> float:
         """Total portfolio value at current market prices.
 
+        For data_gap stocks (no current price), uses last-known price from cache,
+        falling back to avg_cost only if cache is empty.
+
         Args:
             prices: Dict mapping ts_code -> current price.
         """
-        pos_value = sum(
-            p["shares"] * prices.get(code, p["avg_cost"])
-            for code, p in self.positions.items()
-        )
+        pos_value = 0.0
+        for code, p in self.positions.items():
+            price = prices.get(code)
+            if price is not None and np.isfinite(price):
+                self._last_price[code] = price  # Update cache
+            else:
+                # Data gap: use last-known price, fallback to avg_cost
+                price = self._last_price.get(code, p["avg_cost"])
+            if np.isfinite(price) and np.isfinite(p["shares"]):
+                pos_value += p["shares"] * price
+            else:
+                pos_value += p["shares"] * p["avg_cost"]
         return self.cash + pos_value
 
     def rebalance(
@@ -202,6 +216,7 @@ class Portfolio:
             drawdown = (total_value - self.peak_nav) / self.peak_nav
             if drawdown <= max_drawdown_stop:
                 clear_all = True
+                self.peak_nav = 0  # Reset peak after clearing to allow recovery
                 logger.info("Portfolio drawdown %.1f%% exceeded threshold %.1f%%. Clearing all positions.",
                              drawdown * 100, max_drawdown_stop * 100)
                 return list(self.positions.keys()), True
@@ -225,25 +240,59 @@ class Portfolio:
 
         return codes_to_sell, clear_all
 
-    def sell_stocks(self, codes: list[str], prices: dict[str, float], date: str):
+    def sell_stocks(self, codes: list[str], prices: dict[str, float], date: str, reason: str = "rebalance"):
         """Sell specific stocks from portfolio.
 
         Args:
             codes: List of ts_codes to sell.
             prices: Dict mapping ts_code -> current price.
             date: Trade date string.
+            reason: Tag for trade record (e.g. "risk_control", "rebalance").
         """
         for code in codes:
             if code in self.positions:
                 self._sell_position(code, prices.get(code), date)
+                # Tag the just-appended trade
+                if self.trades:
+                    self.trades[-1]["reason"] = reason
 
     def _sell_position(self, code: str, price: float | None, date: str):
-        """Sell entire position in a stock."""
+        """Sell entire position in a stock.
+
+        If price is missing (e.g. data gap), falls back to last-known price
+        from cache instead of zeroing the position.
+        """
         if code not in self.positions:
             return
         pos = self.positions[code]
+
         if price is None or price <= 0:
-            return
+            # Data gap: use last-known price as fallback
+            fallback_price = self._last_price.get(code)
+            if fallback_price is not None and fallback_price > 0:
+                logger.info(
+                    "%s: data gap for %s, using last-known price %.2f (vs avg_cost %.2f)",
+                    date, code, fallback_price, pos["avg_cost"],
+                )
+                price = fallback_price
+            else:
+                logger.warning(
+                    "%s: no valid price for %s and no cached price, removing with 0 proceeds (loss=%.0f)",
+                    date, code, pos["shares"] * pos["avg_cost"],
+                )
+                self.trades.append({
+                    "date": date,
+                    "ts_code": code,
+                    "action": "sell",
+                    "shares": pos["shares"],
+                    "price": 0.0,
+                    "amount": 0.0,
+                    "cost": 0.0,
+                    "reason": "data_gap",
+                })
+                self._last_price.pop(code, None)
+                del self.positions[code]
+                return
 
         sell_amount = pos["shares"] * price
         cost = sell_amount * (self.sell_commission + self.stamp_tax)
@@ -258,6 +307,7 @@ class Portfolio:
             "cost": cost,
             "reason": "rebalance",
         })
+        self._last_price.pop(code, None)
         del self.positions[code]
 
     def _sell_partial(self, code: str, price: float, date: str, sell_shares: int):

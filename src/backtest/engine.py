@@ -207,9 +207,7 @@ class BacktestEngine:
 
                     if codes_to_sell:
                         # Use close prices for risk-control sells
-                        self.portfolio.sell_stocks(codes_to_sell, rc_prices, date)
-                        for t in self.portfolio.trades[-len(codes_to_sell):]:
-                            t["reason"] = "risk_control"
+                        self.portfolio.sell_stocks(codes_to_sell, rc_prices, date, reason="risk_control")
 
             # === Execute pending rebalance from previous day's signal ===
             if pending_rebalance is not None:
@@ -264,10 +262,12 @@ class BacktestEngine:
             pos_prices = {}
             for code in self.portfolio.positions:
                 p = price_map.get((date, code))
-                if p is not None:
+                if p is not None and np.isfinite(p):
                     pos_prices[code] = p
 
             nav = self.portfolio.market_value(pos_prices)
+            if not np.isfinite(nav):
+                nav = np.nan
 
             nav_records.append({
                 "date": date,

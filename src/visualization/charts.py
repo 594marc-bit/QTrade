@@ -125,15 +125,17 @@ def plot_score_distribution(
 def plot_top10_stocks(
     df: pd.DataFrame,
     code2name: dict[str, str] | None = None,
+    weights: dict[str, float] | None = None,
     date: str | None = None,
     save_path: Path | None = None,
 ) -> str:
     """Plot Top 10 stocks as horizontal bar chart with factor contribution breakdown.
 
     Args:
-        df: DataFrame with trade_date, ts_code, total_score, momentum_score, vol_ratio_score,
-            volatility_score columns.
+        df: DataFrame with trade_date, ts_code, total_score, factor score columns.
         code2name: Dict mapping ts_code → stock name.
+        weights: Dict mapping score column → weight (e.g. {"momentum_score": 0.30}).
+                 Uses DEFAULT_WEIGHTS if not provided.
         date: Target date. Uses latest if None.
         save_path: Override save path.
 
@@ -151,7 +153,10 @@ def plot_top10_stocks(
         name = (code2name or {}).get(code, "")
         labels.append(f"{name} ({code})" if name else code)
 
-    # Factor contributions — dynamically render from DEFAULT_WEIGHTS
+    # Use provided weights or fall back to defaults
+    if weights is None:
+        weights = DEFAULT_WEIGHTS
+
     n = len(top10)
     score_to_label = {
         "momentum_score": ("动量", "#4C72B0"),
@@ -163,13 +168,16 @@ def plot_top10_stocks(
         "intraday_range_score": ("日内波幅", "#937860"),
         "pe_ttm_rank_score": ("PE排名", "#E5AE38"),
         "pb_rank_score": ("PB排名", "#6D904F"),
+        "roe_yoy_rank_score": ("ROE改善", "#8E44AD"),
+        "return_20d_score": ("20日收益", "#16A085"),
+        "trend_score": ("60日趋势", "#D35400"),
     }
 
     fig, ax = plt.subplots(figsize=(12, 7))
     y_pos = range(len(labels))
 
     left = np.zeros(n)
-    for score_col, weight in DEFAULT_WEIGHTS.items():
+    for score_col, weight in weights.items():
         if score_col in top10.columns:
             label, color = score_to_label.get(score_col, (score_col, "#999999"))
             contrib = top10[score_col].fillna(0).values * weight
@@ -177,10 +185,13 @@ def plot_top10_stocks(
                     label=f"{label} ({weight:+.0%})", height=0.6)
             left += contrib
 
-    # Total score labels
+    # Total score labels — position to right if positive, left if negative
     for i, (_, row) in enumerate(top10.iterrows()):
-        ax.text(row["total_score"] + 0.02, i, f'{row["total_score"]:.2f}',
-                va="center", fontsize=10, fontweight="bold")
+        ts = row["total_score"]
+        offset = 0.02 if ts >= 0 else -0.02
+        ha = "left" if ts >= 0 else "right"
+        ax.text(ts + offset, i, f'{ts:.2f}',
+                va="center", ha=ha, fontsize=10, fontweight="bold")
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels, fontsize=10)
@@ -254,6 +265,7 @@ def generate_all_charts(
     ic_results: dict[str, dict],
     factor_cols: list[str],
     code2name: dict[str, str] | None = None,
+    weights: dict[str, float] | None = None,
     output_dir: Path | None = None,
 ) -> list[str]:
     """Generate all factor analysis charts.
@@ -264,6 +276,7 @@ def generate_all_charts(
             Each value has 'ic_series' key.
         factor_cols: List of raw factor column names.
         code2name: Optional ts_code → name mapping.
+        weights: Optional dict of score column → weight for top10 chart.
         output_dir: Custom output directory. Defaults to CHARTS_DIR.
 
     Returns:
@@ -292,7 +305,7 @@ def generate_all_charts(
 
     # 3. Top 10 stocks
     if "total_score" in df.columns:
-        path = plot_top10_stocks(df, code2name, save_path=d / "top10_stocks.png")
+        path = plot_top10_stocks(df, code2name, weights=weights, save_path=d / "top10_stocks.png")
         saved.append(path)
         print(f"  Top 10 图表: {path}")
 

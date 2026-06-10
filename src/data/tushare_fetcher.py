@@ -76,6 +76,40 @@ def get_index_constituents(index_code: str = INDEX_CODE) -> pd.DataFrame:
     return df
 
 
+def get_all_stocks() -> pd.DataFrame:
+    """Get all listed A-share stocks via Tushare stock_basic.
+
+    Returns:
+        DataFrame with columns: ts_code, name.
+    """
+    import pickle
+
+    cache_path = DATA_DIR / "all_stocks_tushare.pkl"
+
+    # Check cache
+    if cache_path.exists():
+        cache_time = datetime.fromtimestamp(cache_path.stat().st_mtime)
+        if datetime.now() - cache_time < timedelta(days=CACHE_EXPIRE_DAYS):
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+
+    pro = _get_pro()
+    df = pro.stock_basic(
+        exchange="", list_status="L",
+        fields="ts_code,name",
+    )
+    if df is None or df.empty:
+        raise RuntimeError("stock_basic 返回空，请检查 Tushare 权限")
+
+    df = df[["ts_code", "name"]].copy()
+
+    # Save cache
+    with open(cache_path, "wb") as f:
+        pickle.dump(df, f)
+
+    return df
+
+
 def get_stock_daily(
     ts_code: str,
     start_date: str = START_DATE,
@@ -157,148 +191,274 @@ def get_stock_daily(
     return df
 
 
-def get_stocks_batch(
+def get_missing_trade_dates(
+    start_date: str = START_DATE,
+    end_date: str = END_DATE,
+) -> list[str]:
+    """Determine which trading dates are missing from the database.
+
+    Compares the Tushare trading calendar against existing dates in daily_price.
+
+    Args:
+        start_date: Start date YYYYMMDD.
+        end_date: End date YYYYMMDD.
+
+    Returns:
+        Sorted list of missing trade date strings.
+    """
+    from src.data.storage import get_connection
+
+    pro = _get_pro()
+
+    # Get trading calendar from Tushare
+    try:
+        cal = pro.trade_cal(
+            exchange="SSE",
+            start_date=start_date,
+            end_date=end_date,
+            fields="cal_date,is_open",
+        )
+        if cal is None or cal.empty:
+            return []
+        trade_dates = sorted(
+            cal.loc[cal["is_open"] == 1, "cal_date"].tolist()
+        )
+    except Exception:
+        return []
+
+    if not trade_dates:
+        return []
+
+    # Get existing dates from DB
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_price"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        existing = []
+    finally:
+        conn.close()
+
+    existing_set = {r[0] for r in existing}
+
+    missing = [d for d in trade_dates if d not in existing_set]
+    return missing
+
+
+def fetch_all_stocks_for_date(trade_date: str) -> pd.DataFrame:
+    """Fetch daily OHLCV data for all stocks on a single trade date.
+
+    Args:
+        trade_date: Trade date YYYYMMDD.
+
+    Returns:
+        DataFrame with columns [trade_date, ts_code, open, high, low, close, vol, amount].
+    """
+    pro = _get_pro()
+
+    for attempt in range(3):
+        try:
+            df = pro.daily(
+                trade_date=trade_date,
+                fields="trade_date,ts_code,open,high,low,close,vol,amount",
+            )
+            break
+        except Exception:
+            if attempt == 2:
+                return pd.DataFrame()
+            time.sleep(TUSHARE_FETCH_INTERVAL * (3 ** attempt))
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # Convert numeric columns
+    for col in ["open", "high", "low", "close", "vol", "amount"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Standard column order
+    cols = ["trade_date", "ts_code", "open", "high", "low", "close", "vol", "amount"]
+    return df[[c for c in cols if c in df.columns]]
+
+
+def sync_adj_factor_for_stocks(
     ts_codes: list[str],
     start_date: str = START_DATE,
     end_date: str = END_DATE,
-    adjust: str = "qfq",
-    save_every: int = 50,
-) -> pd.DataFrame:
-    """Fetch daily data for multiple stocks with rate limiting and progress bar.
+) -> int:
+    """Ensure adj_factor data is complete for given stocks up to end_date.
 
-    Saves progress to database every `save_every` stocks.
-    Stops after 10 consecutive failures (likely IP banned).
+    Only fetches adj_factor for stocks whose latest stored adj_factor is
+    older than end_date. Downloads incrementally from the last stored date.
 
     Args:
-        ts_codes: List of stock codes.
-        start_date: Start date YYYYMMDD.
-        end_date: End date YYYYMMDD.
-        adjust: "qfq" (forward adjust) or "hfq" (backward adjust) or "" (raw).
-        save_every: Save to DB every N stocks.
+        ts_codes: List of stock codes to check.
+        start_date: Earliest date for full fetch (when no data exists).
+        end_date: Target end date.
 
     Returns:
-        Combined DataFrame for all stocks.
+        Number of adj_factor rows saved.
     """
-    from src.data.storage import save_daily_price
+    from src.data.storage import get_latest_adj_factor_dates, save_adj_factor
 
-    all_dfs = []
+    if not ts_codes:
+        return 0
+
+    pro = _get_pro()
+    latest_adj = get_latest_adj_factor_dates(ts_codes)
+    total_saved = 0
     failed = []
-    consecutive_failures = 0
 
-    for i, ts_code in enumerate(tqdm(ts_codes, desc="Fetching stock data (Tushare)")):
-        df = get_stock_daily(ts_code, start_date, end_date, adjust)
-        if not df.empty:
-            all_dfs.append(df)
-            consecutive_failures = 0
+    for ts_code in tqdm(ts_codes, desc="Syncing adj_factor"):
+        stored_latest = latest_adj.get(ts_code)
+
+        if stored_latest and stored_latest >= end_date:
+            # Already up to date
+            continue
+
+        # Determine fetch range
+        if stored_latest:
+            fetch_start = (pd.to_datetime(stored_latest) + timedelta(days=1)).strftime("%Y%m%d")
         else:
-            failed.append(ts_code)
-            consecutive_failures += 1
+            fetch_start = start_date
 
-            if consecutive_failures >= 10:
-                print(f"\n  ⚠️ 10 consecutive failures, likely rate-limited. Stopping early.")
-                break
+        try:
+            adj = pro.adj_factor(
+                ts_code=ts_code,
+                start_date=fetch_start,
+                end_date=end_date,
+                fields="trade_date,adj_factor",
+            )
+            if adj is not None and not adj.empty:
+                adj["ts_code"] = ts_code
+                adj["adj_factor"] = pd.to_numeric(adj["adj_factor"], errors="coerce")
+                saved = save_adj_factor(adj[["ts_code", "trade_date", "adj_factor"]])
+                total_saved += saved
+        except Exception:
+            failed.append(ts_code)
 
         time.sleep(TUSHARE_FETCH_INTERVAL)
 
-        # Periodic save
-        if (i + 1) % save_every == 0 and all_dfs:
-            batch_df = pd.concat(all_dfs, ignore_index=True)
-            save_daily_price(batch_df)
-            print(f"\n  [Checkpoint] Saved {len(batch_df)} rows ({i+1}/{len(ts_codes)} stocks)")
-
     if failed:
-        print(f"Failed to fetch {len(failed)} stocks: {failed[:10]}...")
+        print(f"  adj_factor failed: {len(failed)} stocks: {failed[:10]}...")
 
-    if not all_dfs:
-        return pd.DataFrame()
+    return total_saved
 
-    return pd.concat(all_dfs, ignore_index=True)
+
+def _apply_qfq(
+    price_df: pd.DataFrame,
+    adj_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Apply forward adjusted (qfq) prices to a price DataFrame.
+
+    qfq_price = raw_price * adj_factor_on_date / latest_adj_factor
+
+    Args:
+        price_df: Raw price data with [trade_date, ts_code, open, high, low, close].
+        adj_df: Adj_factor data with [ts_code, trade_date, adj_factor].
+
+    Returns:
+        DataFrame with qfq-adjusted open/high/low/close.
+    """
+    if adj_df.empty:
+        return price_df
+
+    # Compute latest adj_factor per stock
+    latest_adj = adj_df.groupby("ts_code")["adj_factor"].last().reset_index()
+    latest_adj.columns = ["ts_code", "latest_adj"]
+
+    # Merge adj_factor for each date
+    merged = price_df.merge(adj_df, on=["ts_code", "trade_date"], how="left")
+    # Fill missing adj_factor by forward-filling within each stock
+    merged = merged.sort_values(["ts_code", "trade_date"])
+    merged["adj_factor"] = merged.groupby("ts_code")["adj_factor"].ffill()
+
+    # Merge latest adj_factor
+    merged = merged.merge(latest_adj, on="ts_code", how="left")
+
+    # Apply qfq: only if both adj_factor and latest_adj are available
+    mask = merged["adj_factor"].notna() & merged["latest_adj"].notna() & (merged["latest_adj"] > 0)
+    for col in ["open", "high", "low", "close"]:
+        if col in merged.columns:
+            merged.loc[mask, col] = (
+                merged.loc[mask, col].astype(float)
+                * merged.loc[mask, "adj_factor"]
+                / merged.loc[mask, "latest_adj"]
+            )
+
+    # Return with original columns
+    out_cols = [c for c in price_df.columns if c in merged.columns]
+    return merged[out_cols]
 
 
 def sync_stocks_data(
-    ts_codes: list[str],
     end_date: str = END_DATE,
-    adjust: str = "qfq",
-    save_every: int = 50,
+    start_date: str = START_DATE,
 ) -> pd.DataFrame:
-    """Smart incremental sync: only fetch missing data per stock.
+    """Sync daily price data for ALL listed A-share stocks, date by date.
 
-    Checks DB for each stock's latest date and decides:
-    - No data in DB -> full fetch (START_DATE ~ end_date)
-    - Data exists but not latest -> incremental fetch (last_date+1 ~ end_date)
-    - Already up to date -> skip
+    Iterates over missing trading dates, fetches all stocks' raw prices per
+    date in a single API call, computes qfq-adjusted prices using cached
+    adj_factor data, and saves to DB.
 
-    Saves incrementally to DB with periodic checkpoints.
+    Stock universe (index, custom codes) does NOT affect sync scope.
+    Sync always covers all A-shares; filtering happens downstream.
 
     Args:
-        ts_codes: List of stock codes.
-        end_date: End date YYYYMMDD.
-        adjust: "qfq" or "".
-        save_every: Save checkpoint every N stocks.
+        end_date: Target end date YYYYMMDD.
+        start_date: Override start date (defaults to config START_DATE).
 
     Returns:
-        Combined DataFrame for all fetched data.
+        DataFrame of newly fetched data (empty if already up to date).
     """
-    from src.data.storage import get_latest_date_per_stock, save_daily_price
+    from src.data.storage import save_daily_price, load_adj_factor
 
-    latest_dates = get_latest_date_per_stock(ts_codes)
+    missing_dates = get_missing_trade_dates(start_date=start_date, end_date=end_date)
 
-    full_count = sum(1 for code in ts_codes if code not in latest_dates)
-    incremental_count = sum(1 for code in latest_dates if latest_dates[code] < end_date)
-    skip_count = len(ts_codes) - full_count - incremental_count
-
-    if skip_count == len(ts_codes):
-        print(f"  All {len(ts_codes)} stocks up to date. Skipping fetch.")
+    if not missing_dates:
+        print("  All trade dates up to date. Skipping price fetch.")
         return pd.DataFrame()
 
-    print(f"  Sync plan: {full_count} full / {incremental_count} incremental / {skip_count} skip")
+    print(f"  Missing {len(missing_dates)} trade dates: {missing_dates[0]} ~ {missing_dates[-1]}")
 
+    # Step 1: Fetch raw prices by date
     all_dfs = []
-    failed = []
-    consecutive_failures = 0
-
-    for i, ts_code in enumerate(tqdm(ts_codes, desc="Syncing stock data")):
-        is_full_fetch = ts_code not in latest_dates
-
-        if is_full_fetch:
-            # No data in DB -> full fetch
-            df = get_stock_daily(ts_code, start_date=START_DATE, end_date=end_date, adjust=adjust)
-        elif latest_dates[ts_code] >= end_date:
-            # Already up to date -> skip
+    for date in tqdm(missing_dates, desc="Fetching prices by date"):
+        df = fetch_all_stocks_for_date(date)
+        if df.empty:
+            print(f"\n  Warning: no data for {date}, skipping")
             continue
-        else:
-            # Incremental fetch
-            last_date = latest_dates[ts_code]
-            next_day = (pd.to_datetime(last_date) + timedelta(days=1)).strftime("%Y%m%d")
-            df = get_stock_daily(ts_code, start_date=next_day, end_date=end_date, adjust=adjust)
-
-        if not df.empty:
-            all_dfs.append(df)
-            consecutive_failures = 0
-        elif is_full_fetch:
-            # Full fetch returning empty = real failure
-            failed.append(ts_code)
-            consecutive_failures += 1
-            if consecutive_failures >= 10:
-                print(f"\n  Warning: 10 consecutive failures, stopping early.")
-                break
-        # else: incremental fetch empty = no new data, not a failure
-
+        all_dfs.append(df)
         time.sleep(TUSHARE_FETCH_INTERVAL)
-
-        # Periodic checkpoint save
-        if (i + 1) % save_every == 0 and all_dfs:
-            batch_df = pd.concat(all_dfs, ignore_index=True)
-            saved = save_daily_price(batch_df)
-            print(f"\n  [Checkpoint] Saved {saved} rows ({i+1}/{len(ts_codes)} stocks)")
-
-    if failed:
-        print(f"  Failed: {len(failed)} stocks: {failed[:10]}...")
 
     if not all_dfs:
         return pd.DataFrame()
 
-    return pd.concat(all_dfs, ignore_index=True)
+    raw_prices = pd.concat(all_dfs, ignore_index=True)
+
+    # Step 2: Ensure adj_factor is complete for all stocks in the fetched data
+    all_codes = sorted(raw_prices["ts_code"].unique().tolist())
+    if all_codes:
+        adj_saved = sync_adj_factor_for_stocks(
+            all_codes, start_date=start_date, end_date=end_date
+        )
+        if adj_saved:
+            print(f"  Saved {adj_saved} adj_factor rows")
+
+    # Step 3: Load adj_factor and apply qfq to raw prices
+    adj_all = load_adj_factor(
+        ts_codes=all_codes,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    qfq_df = _apply_qfq(raw_prices, adj_all)
+
+    # Step 4: Save qfq-adjusted prices
+    saved = save_daily_price(qfq_df)
+    print(f"  Saved {saved} qfq-adjusted price rows ({len(all_dfs)} dates)")
+
+    return qfq_df
 
 
 def fetch_daily_basic(
@@ -357,6 +517,52 @@ def fetch_daily_basic(
 
     result = pd.concat(all_dfs, ignore_index=True)
     for col in ["pe_ttm", "pb", "ps_ttm"]:
+        if col in result.columns:
+            result[col] = pd.to_numeric(result[col], errors="coerce")
+
+    return result
+
+
+def fetch_fina_indicator(
+    ts_codes: list[str],
+    start_date: str = START_DATE,
+    end_date: str = END_DATE,
+) -> pd.DataFrame:
+    """Fetch fina_indicator (ROE, ROE YoY) from Tushare for given stocks.
+
+    Args:
+        ts_codes: List of stock codes.
+        start_date: Start date YYYYMMDD (end_date filter on reports).
+        end_date: End date YYYYMMDD (end_date filter on reports).
+
+    Returns:
+        DataFrame with columns [ts_code, end_date, roe, roe_yoy].
+    """
+    pro = _get_pro()
+    all_dfs = []
+    fields = "ts_code,end_date,roe,roe_yoy"
+
+    for i, code in enumerate(ts_codes):
+        try:
+            df = pro.fina_indicator(
+                ts_code=code,
+                start_date=start_date,
+                end_date=end_date,
+                fields=fields,
+            )
+            if df is not None and not df.empty:
+                all_dfs.append(df)
+        except Exception:
+            pass
+
+        if (i + 1) % 50 == 0 and i < len(ts_codes) - 1:
+            time.sleep(TUSHARE_FETCH_INTERVAL)
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    result = pd.concat(all_dfs, ignore_index=True)
+    for col in ["roe", "roe_yoy"]:
         if col in result.columns:
             result[col] = pd.to_numeric(result[col], errors="coerce")
 

@@ -73,6 +73,11 @@ FETCH_RETRIES = 3
 MAX_CONSECUTIVE_MISSING = 5  # drop rows with >5 consecutive missing
 PRICE_CHANGE_LIMIT = 0.20  # ±20% daily change limit
 
+# Stock quality filter
+STOCK_MIN_TRADING_DAYS = 240  # minimum trading days required for a stock
+BSE_PREFIXES = ("920", "830", "870")  # 北交所股票前缀 (ts_code 如 920XXX.BJ)
+ST_PATTERN = "ST"  # ST 股票标记
+
 # Factor defaults
 MOMENTUM_LOOKBACK = 20
 VOLUME_SHORT_WINDOW = 5

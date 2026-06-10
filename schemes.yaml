@@ -43,6 +43,18 @@ schemes:
       trend_score: -0.15
       volatility_score: -0.15
       turnover_momentum_score: -0.15
+  v1_zz1000:
+    description: 正式方案v1（中证1000，价值+低波动+ROE改善）
+    factors:
+    - pe_ttm_rank
+    - intraday_range_10d
+    - volatility_20d
+    - roe_yoy_rank
+    weights:
+      pe_ttm_rank_score: -0.20
+      intraday_range_score: -0.15
+      volatility_score: -0.15
+      roe_yoy_rank_score: 0.30
   momentum:
     description: 动量反转策略
     factors:
@@ -57,3 +69,19 @@ schemes:
       rsi_score: -0.25
       volatility_score: -0.15
       return_20d_score: 0.1
+  动量增强版0610:
+    description: 动量增强版（6因子，业绩+动量+估值+低波，宽持仓不设硬止损）
+    factors:
+    - roe_yoy_rank
+    - momentum_20d
+    - trend_60d
+    - pe_ttm_rank
+    - intraday_range_10d
+    - volatility_20d
+    weights:
+      roe_yoy_rank_score: 0.25
+      momentum_score: 0.20
+      trend_score: 0.10
+      pe_ttm_rank_score: -0.15
+      intraday_range_score: -0.10
+      volatility_score: -0.10

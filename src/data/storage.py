@@ -218,6 +218,149 @@ def save_daily_basic(df: pd.DataFrame) -> int:
     return len(rows)
 
 
+def _ensure_adj_factor_table(conn: sqlite3.Connection):
+    """Ensure adj_factor table exists for qfq adjustment factor storage."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS adj_factor (
+            ts_code TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            adj_factor REAL NOT NULL
+        )
+    """)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_adj_factor_unique "
+            "ON adj_factor (ts_code, trade_date)"
+        )
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+
+
+def save_adj_factor(df: pd.DataFrame) -> int:
+    """Save adj_factor data to SQLite using UPSERT.
+
+    Args:
+        df: DataFrame with columns [ts_code, trade_date, adj_factor].
+
+    Returns:
+        Number of rows saved.
+    """
+    if df.empty:
+        return 0
+
+    conn = get_connection()
+    _ensure_adj_factor_table(conn)
+
+    cols = ["ts_code", "trade_date", "adj_factor"]
+    available_cols = [c for c in cols if c in df.columns]
+    if len(available_cols) < 3:
+        conn.close()
+        return 0
+
+    placeholders = ", ".join(["?"] * len(available_cols))
+    col_names = ", ".join(available_cols)
+
+    sql = f"INSERT OR REPLACE INTO adj_factor ({col_names}) VALUES ({placeholders})"
+
+    rows = df[available_cols].values.tolist()
+    conn.executemany(sql, rows)
+    conn.commit()
+    conn.close()
+
+    return len(rows)
+
+
+def load_adj_factor(
+    ts_codes: list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """Load adj_factor data from SQLite.
+
+    Args:
+        ts_codes: List of stock codes to filter, or None for all.
+        start_date: Start date YYYYMMDD, or None.
+        end_date: End date YYYYMMDD, or None.
+
+    Returns:
+        DataFrame with columns: ts_code, trade_date, adj_factor.
+    """
+    conn = get_connection()
+    try:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='adj_factor'"
+        ).fetchall()
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+
+    if not tables:
+        conn.close()
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_sql("SELECT ts_code, trade_date, adj_factor FROM adj_factor", conn)
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+    if df.empty:
+        return df
+
+    if ts_codes:
+        df = df[df["ts_code"].isin(ts_codes)]
+    if start_date:
+        df = df[df["trade_date"] >= start_date]
+    if end_date:
+        df = df[df["trade_date"] <= end_date]
+
+    return df.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+
+
+def get_latest_adj_factor_dates(ts_codes: list[str] | None = None) -> dict[str, str]:
+    """Get the latest adj_factor date for each stock.
+
+    Args:
+        ts_codes: List of stock codes to filter. If None, returns all.
+
+    Returns:
+        Dict mapping ts_code to latest trade_date string.
+    """
+    conn = get_connection()
+    try:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='adj_factor'"
+        ).fetchall()
+    except Exception:
+        conn.close()
+        return {}
+
+    if not tables:
+        conn.close()
+        return {}
+
+    try:
+        if ts_codes:
+            placeholders = ",".join(["?"] * len(ts_codes))
+            rows = conn.execute(
+                f"SELECT ts_code, MAX(trade_date) FROM adj_factor "
+                f"WHERE ts_code IN ({placeholders}) GROUP BY ts_code",
+                tuple(ts_codes),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts_code, MAX(trade_date) FROM adj_factor GROUP BY ts_code"
+            ).fetchall()
+        conn.close()
+        return {row[0]: row[1] for row in rows}
+    except Exception:
+        conn.close()
+        return {}
+
+
 def load_daily_basic(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -273,6 +416,123 @@ def merge_fundamentals(price_df: pd.DataFrame, basic_df: pd.DataFrame) -> pd.Dat
     basic_subset = basic_df[merge_cols + value_cols].drop_duplicates(subset=merge_cols)
 
     return price_df.merge(basic_subset, on=merge_cols, how="left")
+
+
+def load_fina_indicator(
+    ts_codes: list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """Load fina_indicator data from SQLite.
+
+    Args:
+        ts_codes: List of stock codes to filter, or None for all.
+        start_date: Start date YYYYMMDD, or None.
+        end_date: End date YYYYMMDD, or None.
+
+    Returns:
+        DataFrame with columns: trade_date, ts_code, roe, roe_yoy.
+    """
+    conn = get_connection()
+
+    try:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fina_indicator'"
+        ).fetchall()
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+
+    if not tables:
+        conn.close()
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_sql("SELECT ts_code, trade_date, roe, roe_yoy FROM fina_indicator", conn)
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+
+    conn.close()
+
+    if df.empty:
+        return df
+
+    if ts_codes:
+        df = df[df["ts_code"].isin(ts_codes)]
+    if start_date:
+        df = df[df["trade_date"] >= start_date]
+    if end_date:
+        df = df[df["trade_date"] <= end_date]
+
+    df = df.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+    return df
+
+
+def save_fina_indicator(df: pd.DataFrame, if_exists: str = "append") -> int:
+    """Save fina_indicator data to SQLite.
+
+    Args:
+        df: DataFrame with at least ts_code, end_date, roe, roe_yoy columns.
+        if_exists: 'append' or 'replace'.
+
+    Returns:
+        Number of rows saved.
+    """
+    conn = get_connection()
+    cols = ["ts_code", "end_date", "roe", "roe_yoy"]
+    existing_cols = [c for c in cols if c in df.columns]
+    df_to_save = df[existing_cols].copy()
+    # Rename end_date to trade_date for consistency with other tables
+    if "end_date" in df_to_save.columns:
+        df_to_save = df_to_save.rename(columns={"end_date": "trade_date"})
+    df_to_save = df_to_save.dropna(subset=["ts_code", "trade_date"])
+
+    if df_to_save.empty:
+        conn.close()
+        return 0
+
+    try:
+        df_to_save.to_sql("fina_indicator", conn, if_exists=if_exists, index=False)
+        saved = len(df_to_save)
+    except Exception as e:
+        saved = 0
+    finally:
+        conn.close()
+
+    return saved
+
+
+def merge_fina_indicator(price_df: pd.DataFrame, fina_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-join fina_indicator data onto price DataFrame.
+
+    Since fina_indicator reports are quarterly (end_date), this function
+    forward-fills the latest report for each stock up to the next report date.
+
+    Args:
+        price_df: Main DataFrame with trade_date, ts_code.
+        fina_df: DataFrame with trade_date (end_date), ts_code, roe, roe_yoy.
+
+    Returns:
+        price_df with roe, roe_yoy columns added.
+    """
+    if fina_df.empty:
+        price_df["roe"] = pd.NA
+        price_df["roe_yoy"] = pd.NA
+        return price_df
+
+    merge_cols = ["trade_date", "ts_code"]
+    value_cols = [c for c in ["roe", "roe_yoy"] if c in fina_df.columns]
+    fina_subset = fina_df[merge_cols + value_cols].drop_duplicates(subset=merge_cols)
+
+    merged = price_df.merge(fina_subset, on=merge_cols, how="left")
+
+    # Forward-fill within each stock: use latest available report data
+    merged = merged.sort_values(["ts_code", "trade_date"])
+    for col in value_cols:
+        merged[col] = merged.groupby("ts_code")[col].ffill()
+
+    return merged
 
 
 def export_csv(

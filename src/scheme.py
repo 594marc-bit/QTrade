@@ -145,6 +145,19 @@ def _validate_factors(factors: set[str]) -> tuple[set[str], set[str]]:
     Returns:
         Tuple of (valid_factors, invalid_factors).
     """
+    # Ensure all factor modules are imported so they register themselves
+    import src.factors.momentum
+    import src.factors.volume
+    import src.factors.volatility
+    import src.factors.rsi
+    import src.factors.ma_deviation
+    import src.factors.turnover
+    import src.factors.intraday_range
+    import src.factors.valuation
+    import src.factors.return_20d
+    import src.factors.trend_60d
+    import src.factors.roe_change
+
     from src.factors.base import get_registered_factors
 
     registered = set(get_registered_factors().keys())

@@ -34,6 +34,7 @@ from src.config import (
     DATA_DIR,
     DEFAULT_WEIGHTS,
     PROJECT_ROOT,
+    STOCK_MIN_TRADING_DAYS,
 )
 from src.factors.base import get_registered_factors
 from src.factors.scorer import _factor_to_score_col
@@ -53,6 +54,13 @@ import src.factors.trend_60d
 
 console = Console()
 
+
+def parse_stock_codes(input_str: str) -> list[str]:
+    """Parse stock codes from comma-separated input string."""
+    codes = [c.strip() for c in input_str.replace(" ", ",").split(",")]
+    return sorted({c for c in codes if c})
+
+
 # Available indices
 INDEX_OPTIONS = {
     "000300": "沪深300",
@@ -66,7 +74,7 @@ class WizardConfig:
     """Holds all configuration collected by the wizard."""
 
     def __init__(self):
-        self.index_code: str = "000300"
+        self.index_codes: list[str] = ["000300"]
         self.start_date: str = "20230101"
         self.end_date: str = date.today().strftime("%Y%m%d")
         self.refresh_data: bool = True
@@ -78,9 +86,9 @@ class WizardConfig:
         self.top_n: int = 20
         self.rebalance_freq: str = "M"
         self.risk_control_enabled: bool = False
-        self.stop_loss: float = -0.12
-        self.take_profit: float = 0.15
-        self.max_drawdown_stop: float = -0.10
+        self.stop_loss: float = -0.15
+        self.take_profit: float = 0.20
+        self.max_drawdown_stop: float = -0.20
         self.cooldown_days: int = 5
         self.position_sizing_method: str = "equal_weight"
         self.min_weight: float = 0.05
@@ -90,15 +98,54 @@ class WizardConfig:
         self.backtest_start: str | None = None
         self.backtest_end: str | None = None
         self.auto_confirm: bool = False
+        self.stock_codes: list[str] = []
 
 
 def step_index(cfg: WizardConfig) -> None:
-    """Step 1: Select stock universe."""
-    options = [f"{v} ({k})" for k, v in INDEX_OPTIONS.items()]
-    default_idx = list(INDEX_OPTIONS.keys()).index(cfg.index_code) + 1
-    choice = select("选择股票范围", options, default=default_idx)
-    cfg.index_code = list(INDEX_OPTIONS.keys())[choice - 1]
-    console.print(f"  [green]已选择: {INDEX_OPTIONS[cfg.index_code]}[/green]")
+    """Step 1: Select stock universe (supports multi-select)."""
+    # Build options: indices + custom stock codes
+    index_opts = [
+        {"id": k, "label": f"{v} ({k})"}
+        for k, v in INDEX_OPTIONS.items()
+    ]
+    options = index_opts + [{"id": "__custom__", "label": "自定义股票代码"}]
+
+    defaults = set(cfg.index_codes)
+    selected = multi_select(
+        "选择股票范围（可多选，输入编号切换，回车确认）",
+        options,
+        defaults=defaults,
+    )
+
+    # Check if custom stock codes was selected
+    if "__custom__" in selected:
+        selected.discard("__custom__")
+        while True:
+            raw = input("请输入股票代码（逗号或空格分隔）: ").strip()
+            codes = parse_stock_codes(raw)
+            if not codes:
+                console.print("[red]请至少输入一个股票代码[/red]")
+                continue
+            console.print(f"  已解析 {len(codes)} 只股票: {', '.join(codes)}")
+            if confirm("确认股票列表？", default=True):
+                cfg.stock_codes = codes
+                cfg.index_codes = []
+                return
+
+    # If "all" selected, use only that (mutually exclusive)
+    if "all" in selected:
+        cfg.index_codes = ["all"]
+        cfg.stock_codes = []
+        console.print(f"  [green]已选择: 全部A股[/green]")
+    elif selected:
+        cfg.index_codes = sorted(selected)
+        cfg.stock_codes = []
+        names = [INDEX_OPTIONS.get(c, c) for c in cfg.index_codes]
+        console.print(f"  [green]已选择: {', '.join(names)} ({', '.join(cfg.index_codes)})[/green]")
+    else:
+        # Nothing selected — keep default
+        cfg.index_codes = ["000300"]
+        console.print(f"  [yellow]未选择，使用默认: 沪深300[/yellow]")
 
 
 def step_date_range(cfg: WizardConfig) -> None:
@@ -126,8 +173,28 @@ def step_data_refresh(cfg: WizardConfig) -> None:
 
     try:
         conn = get_connection()
-        result = conn.execute("SELECT MAX(trade_date) FROM daily_price").fetchone()
-        count_result = conn.execute("SELECT COUNT(DISTINCT ts_code) FROM daily_price").fetchone()
+        if cfg.stock_codes:
+            # Normalize to ts_code format for query
+            ts_codes_sql = []
+            for code in cfg.stock_codes:
+                if "." in code:
+                    ts_codes_sql.append(code)
+                elif code.startswith(("6", "9")):
+                    ts_codes_sql.append(f"{code}.SH")
+                else:
+                    ts_codes_sql.append(f"{code}.SZ")
+            placeholders = ",".join(["?"] * len(ts_codes_sql))
+            result = conn.execute(
+                f"SELECT MAX(trade_date) FROM daily_price WHERE ts_code IN ({placeholders})",
+                ts_codes_sql,
+            ).fetchone()
+            count_result = conn.execute(
+                f"SELECT COUNT(DISTINCT ts_code) FROM daily_price WHERE ts_code IN ({placeholders})",
+                ts_codes_sql,
+            ).fetchone()
+        else:
+            result = conn.execute("SELECT MAX(trade_date) FROM daily_price").fetchone()
+            count_result = conn.execute("SELECT COUNT(DISTINCT ts_code) FROM daily_price").fetchone()
         conn.close()
         latest_date = result[0] if result and result[0] else None
         stock_count = count_result[0] if count_result else 0
@@ -448,8 +515,16 @@ def get_param_summary(cfg: WizardConfig) -> dict:
         f"{_factor_to_score_col(name)}={cfg.weights.get(_factor_to_score_col(name), 0):+.2f}"
         for name in sorted(cfg.enabled_factors)
     )
+    if cfg.stock_codes:
+        stock_range = f"自定义 ({len(cfg.stock_codes)} 只)"
+    elif "all" in cfg.index_codes:
+        stock_range = "全部A股"
+    else:
+        names = [INDEX_OPTIONS.get(c, c) for c in cfg.index_codes]
+        stock_range = " + ".join(names) + f" ({', '.join(cfg.index_codes)})"
+
     return {
-        "股票范围": f"{INDEX_OPTIONS.get(cfg.index_code, cfg.index_code)} ({cfg.index_code})",
+        "股票范围": stock_range,
         "时间范围": f"{cfg.start_date} ~ {cfg.end_date}",
         "数据源": cfg.data_source,
         "刷新数据": "是" if cfg.refresh_data else "否",
@@ -504,6 +579,7 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
     import src.factors.valuation
     import src.factors.return_20d
     import src.factors.trend_60d
+    import src.factors.roe_change
 
     out = output_dir or DATA_DIR
     out.mkdir(parents=True, exist_ok=True)
@@ -512,6 +588,7 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
     if cfg.data_source == "tushare" and TUSHARE_TOKEN:
         import src.data.tushare_fetcher as tf
         _get_index_constituents = tf.get_index_constituents
+        _get_all_stocks = tf.get_all_stocks
         _sync_stocks_data = tf.sync_stocks_data
         _fetch_daily_basic = tf.fetch_daily_basic
 
@@ -521,26 +598,54 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
     else:
         import src.data.akshare_fetcher as af
         _get_index_constituents = af.get_index_constituents
+        _get_all_stocks = af.get_all_stocks
         _sync_stocks_data = af.sync_stocks_data
         _fetch_daily_basic = af.fetch_daily_basic
         _get_index_daily = af.get_index_daily
 
-    # Step 1: Get stock list
+    # Step 1: Get stock list (supports multi-index union)
     console.print("\n[bold green]▶ 获取股票列表...[/]")
-    if cfg.index_code == "all":
-        # For all A-shares, we'd need a different approach
-        console.print("[yellow]全部A股模式: 使用沪深300作为替代[/yellow]")
-        constituents = _get_index_constituents("000300")
+    if cfg.stock_codes:
+        # Custom stock pool: use codes directly
+        ts_codes = []
+        code2name = {}
+        for code in cfg.stock_codes:
+            if "." in code:
+                ts_code = code
+            elif code.startswith(("6", "9")):
+                ts_code = f"{code}.SH"
+            else:
+                ts_code = f"{code}.SZ"
+            ts_codes.append(ts_code)
+            code2name[ts_code] = code
+        console.print(f"  自定义股票池: {len(ts_codes)} 只股票")
+    elif "all" in cfg.index_codes:
+        # Fetch all listed A-shares
+        constituents = _get_all_stocks()
+        ts_codes = constituents["ts_code"].tolist()
+        code2name = dict(zip(constituents["ts_code"], constituents["name"]))
     else:
-        constituents = _get_index_constituents(cfg.index_code)
-    ts_codes = constituents["ts_code"].tolist()
-    code2name = dict(zip(constituents["ts_code"], constituents["name"]))
+        # Union constituents from all selected indices
+        all_constituents = []
+        for idx in cfg.index_codes:
+            c = _get_index_constituents(idx)
+            all_constituents.append(c)
+            console.print(f"  {INDEX_OPTIONS.get(idx, idx)} ({idx}): {len(c)} 只")
+        merged = pd.concat(all_constituents, ignore_index=True)
+        merged = merged.drop_duplicates(subset=["ts_code"])
+        ts_codes = merged["ts_code"].tolist()
+        code2name = dict(zip(merged["ts_code"], merged["name"]))
     console.print(f"  共 {len(ts_codes)} 只股票")
 
-    # Step 2: Data sync
+    # Step 2: Data sync (always full market, universe filtering happens at load)
     console.print("\n[bold green]▶ 同步数据...[/]")
     if cfg.refresh_data:
-        new_data = _sync_stocks_data(ts_codes, end_date=cfg.end_date)
+        # Tushare path: date-based full-market sync (no ts_codes needed)
+        # AKShare path: per-stock sync, still needs explicit stock list
+        if cfg.data_source == "tushare" and TUSHARE_TOKEN:
+            new_data = _sync_stocks_data(end_date=cfg.end_date, start_date=cfg.start_date)
+        else:
+            new_data = _sync_stocks_data(ts_codes, end_date=cfg.end_date)
         if new_data.empty:
             console.print("  数据已是最新，使用缓存")
             df = load_daily_price(start_date=cfg.start_date, end_date=cfg.end_date)
@@ -554,10 +659,28 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
         console.print("[red]错误：未获取到数据！[/red]")
         return
 
-    # Step 3: Clean
-    console.print("\n[bold green]▶ 清洗数据...[/]")
-    df, report = clean_pipeline(df)
-    console.print(f"  清洗后: {report['total_rows']} 行, {report['total_stocks']} 只股票")
+    # Filter to selected stock universe (sync always fetches full market)
+    if ts_codes:
+        ts_set = set(ts_codes)
+        df = df[df["ts_code"].isin(ts_set)]
+        if df.empty:
+            console.print(f"[red]错误：指定的 {len(ts_codes)} 只股票无缓存数据[/red]")
+            return
+
+    # Step 3: Clean (includes stock quality filtering)
+    console.print("\n[bold green]▶ 清洗数据 & 过滤低质量股票...[/]")
+    df, report = clean_pipeline(df, filter_stocks=True)
+    filter_info = report.get("filter", {})
+    if filter_info:
+        total_removed = filter_info.get("total_removed", 0)
+        remaining = filter_info.get("remaining_stocks", df["ts_code"].nunique())
+        console.print(f"  过滤: 剔除 {total_removed} 只低质量股票")
+        if "bse_stocks" in filter_info:
+            console.print(f"    - 北交所: {filter_info['bse_stocks']} 只")
+        if "insufficient_data" in filter_info:
+            console.print(f"    - 数据不足 (<{STOCK_MIN_TRADING_DAYS}天): {filter_info['insufficient_data']} 只")
+        console.print(f"  剩余: {remaining} 只股票")
+    console.print(f"  数据清洗后: {len(df)} 行, {df['ts_code'].nunique()} 只股票")
     save_daily_price(df)
 
     # Step 4: Fundamentals
@@ -570,65 +693,91 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
     if not basic_df.empty:
         df = merge_fundamentals(df, basic_df)
 
-    # Step 5: Calculate factors (only enabled ones)
-    console.print("\n[bold green]▶ 计算因子...[/]")
-    factors = get_registered_factors()
-    factor_cols = []
-    for name in sorted(cfg.enabled_factors):
-        if name in factors:
-            factor = factors[name]()
-            df = factor.calculate(df)
-            factor_cols.append(factor.factor_name)
-            desc = getattr(factor, "description_cn", None) or factor.description
-            console.print(f"  ✓ {factor.factor_name} ({desc})")
+    # Step 4b: Fina Indicator (ROE, ROE YoY)
+    needs_fina = any(f in cfg.enabled_factors for f in ["roe_yoy_rank"])
+    if needs_fina and cfg.data_source == "tushare":
+        console.print("\n[bold green]▶ 获取ROE基本面数据...[/]")
+        from src.data.storage import load_fina_indicator, save_fina_indicator, merge_fina_indicator
+        fina_df = load_fina_indicator(ts_codes=ts_codes, start_date=cfg.start_date, end_date=cfg.end_date)
+        if fina_df.empty:
+            fina_df = tf.fetch_fina_indicator(ts_codes, start_date=cfg.start_date, end_date=cfg.end_date)
+            if not fina_df.empty:
+                saved = save_fina_indicator(fina_df)
+                console.print(f"  获取并保存 {saved} 条ROE数据")
+                # Re-load from DB to get consistent column names
+                fina_df = load_fina_indicator(ts_codes=ts_codes, start_date=cfg.start_date, end_date=cfg.end_date)
+        if not fina_df.empty:
+            df = merge_fina_indicator(df, fina_df)
+            console.print(f"  合并ROE数据完成")
+        else:
+            console.print("  [yellow]未能获取ROE数据，roe_yoy_rank因子将为空[/yellow]")
 
-    # Step 6: Scoring
-    if cfg.do_scoring:
-        console.print("\n[bold green]▶ 标准化 & 综合打分...[/]")
-        df = standardize_factors(df, factor_cols)
-        df = compute_total_score(df, weights=cfg.weights)
-
-        # Show top picks
-        latest_date = df["trade_date"].max()
-        top_picks = select_top_n(df, latest_date, n=cfg.top_n)
-
-        # Industry neutral
-        if cfg.industry_neutral_enabled:
-            industry_map = get_industry_map(ts_codes)
-            if industry_map:
-                top_picks = apply_industry_constraint(
-                    top_picks, industry_map,
-                    max_pct=cfg.max_industry_pct, n=cfg.top_n,
-                )
-
-        show_top_stocks(top_picks, code2name, n=cfg.top_n)
-
-        # IC analysis
-        console.print("\n[bold green]▶ IC 分析...[/]")
-        df = compute_future_return(df, n_days=20)
-        return_col = "future_return_20d"
-        ic_results = {}
-        for name in sorted(cfg.enabled_factors):
-            if name not in factors:
-                continue
-            factor_col = factors[name]().factor_name
-            if factor_col not in df.columns:
-                continue
-            result = evaluate_factor(df, factor_col, return_col)
-            ic_results[factor_col] = result
-            s = result["summary"]
-            desc = getattr(factors[name], "description_cn", None) or factors[name].description
-            console.print(
-                f"  {factor_col:20s}  {desc}  IC均值: {s['ic_mean']:+.4f}  "
-                f"ICIR: {s['icir']:+.4f}  胜率: {s['win_rate']:.1%}  "
-                f"→ {result['verdict']}"
-            )
-    else:
+    # Step 5 & 6: Factor calculation and scoring (skip for custom stock pool)
+    use_custom_pool = bool(cfg.stock_codes)
+    if use_custom_pool:
+        console.print("\n[bold green]▶ 自定义股票池: 跳过因子计算和评分[/]")
         top_picks = pd.DataFrame()
         ic_results = {}
+        factor_cols = []
+    else:
+        console.print("\n[bold green]▶ 计算因子...[/]")
+        factors = get_registered_factors()
+        factor_cols = []
+        for name in sorted(cfg.enabled_factors):
+            if name in factors:
+                factor = factors[name]()
+                df = factor.calculate(df)
+                factor_cols.append(factor.factor_name)
+                desc = getattr(factor, "description_cn", None) or factor.description
+                console.print(f"  ✓ {factor.factor_name} ({desc})")
+
+        # Step 6: Scoring
+        if cfg.do_scoring:
+            console.print("\n[bold green]▶ 标准化 & 综合打分...[/]")
+            df = standardize_factors(df, factor_cols)
+            df = compute_total_score(df, weights=cfg.weights)
+
+            # Show top picks
+            latest_date = df["trade_date"].max()
+            top_picks = select_top_n(df, latest_date, n=cfg.top_n)
+
+            # Industry neutral
+            if cfg.industry_neutral_enabled:
+                industry_map = get_industry_map(ts_codes)
+                if industry_map:
+                    top_picks = apply_industry_constraint(
+                        top_picks, industry_map,
+                        max_pct=cfg.max_industry_pct, n=cfg.top_n,
+                    )
+
+            show_top_stocks(top_picks, code2name, n=cfg.top_n)
+
+            # IC analysis
+            console.print("\n[bold green]▶ IC 分析...[/]")
+            df = compute_future_return(df, n_days=20)
+            return_col = "future_return_20d"
+            ic_results = {}
+            for name in sorted(cfg.enabled_factors):
+                if name not in factors:
+                    continue
+                factor_col = factors[name]().factor_name
+                if factor_col not in df.columns:
+                    continue
+                result = evaluate_factor(df, factor_col, return_col)
+                ic_results[factor_col] = result
+                s = result["summary"]
+                desc = getattr(factors[name], "description_cn", None) or factors[name].description
+                console.print(
+                    f"  {factor_col:20s}  {desc}  IC均值: {s['ic_mean']:+.4f}  "
+                    f"ICIR: {s['icir']:+.4f}  胜率: {s['win_rate']:.1%}  "
+                    f"→ {result['verdict']}"
+                )
+        else:
+            top_picks = pd.DataFrame()
+            ic_results = {}
 
     # Step 7: Backtest
-    if cfg.do_scoring and (cfg.auto_confirm or confirm("\n是否运行回测？", default=True)):
+    if cfg.auto_confirm or confirm("\n是否运行回测？", default=True):
         console.print("\n[bold green]▶ 运行回测...[/]")
 
         # Filter by backtest date range (after factor calculation for warmup)
@@ -653,6 +802,11 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
                     return
             console.print(f"  回测区间: {bt_dates.min()} ~ {bt_dates.max()} ({len(bt_dates)} 个交易日)")
 
+        # Add uniform score for custom stock pool or when scoring was skipped
+        if "total_score" not in bt_df.columns:
+            bt_df = bt_df.copy()
+            bt_df["total_score"] = 1.0
+
         bt_industry_map = None
         if cfg.industry_neutral_enabled:
             bt_industry_map = get_industry_map(ts_codes)
@@ -673,8 +827,12 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
             max_industry_pct=cfg.max_industry_pct,
         )
 
+        # Benchmark: use first selected index (or 000300 for "all")
+        bm_symbol = "000300"  # default
+        if cfg.index_codes and "all" not in cfg.index_codes:
+            bm_symbol = cfg.index_codes[0]
         benchmark_df = _get_index_daily(
-            symbol=cfg.index_code if cfg.index_code != "all" else "000300",
+            symbol=bm_symbol,
             start_date=cfg.backtest_start or cfg.start_date,
             end_date=cfg.backtest_end or cfg.end_date,
         )
@@ -689,7 +847,7 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
 
         # Generate charts into result directory
         console.print("\n[bold green]▶ 生成图表...[/]")
-        generate_all_charts(df, ic_results, factor_cols, code2name, output_dir=result_dir)
+        generate_all_charts(df, ic_results, factor_cols, code2name, weights=cfg.weights, output_dir=result_dir)
         generate_backtest_charts(bt_result, output_dir=result_dir)
         console.print(f"  图表已生成到 {result_dir}")
 
@@ -806,8 +964,13 @@ def run_wizard(cli_args: dict[str, Any] | None = None) -> None:
     show_banner()
 
     # Pre-fill from CLI args
-    if "index" in cli_args:
-        cfg.index_code = cli_args["index"]
+    if "stocks" in cli_args:
+        cfg.stock_codes = parse_stock_codes(cli_args["stocks"])
+        cfg.index_codes = []
+    elif "index" in cli_args:
+        # Support comma-separated indices for multi-select
+        idx_val = cli_args["index"]
+        cfg.index_codes = [i.strip() for i in idx_val.split(",") if i.strip()]
     if "start" in cli_args:
         cfg.start_date = cli_args["start"]
     if "end" in cli_args:
@@ -872,10 +1035,13 @@ def run_wizard(cli_args: dict[str, Any] | None = None) -> None:
 
     # Interactive steps (skip if CLI arg provided)
     console.print("\n[bold]═══ 第 1 步: 股票范围 ═══[/bold]")
-    if "index" not in cli_args:
+    if "stocks" in cli_args:
+        console.print(f"  [green]已指定 {len(cfg.stock_codes)} 只股票: {', '.join(cfg.stock_codes[:10])}{'...' if len(cfg.stock_codes) > 10 else ''}[/green]")
+    elif "index" not in cli_args:
         step_index(cfg)
     else:
-        console.print(f"  [green]已指定: {INDEX_OPTIONS.get(cfg.index_code, cfg.index_code)}[/green]")
+        names = [INDEX_OPTIONS.get(c, c) for c in cfg.index_codes]
+        console.print(f"  [green]已指定: {', '.join(names)} ({', '.join(cfg.index_codes)})[/green]")
 
     console.print("\n[bold]═══ 第 2 步: 时间范围 ═══[/bold]")
     if "start" not in cli_args and "end" not in cli_args:
@@ -892,9 +1058,10 @@ def run_wizard(cli_args: dict[str, Any] | None = None) -> None:
     else:
         console.print(f"  [green]已指定: {cfg.data_source}[/green]")
 
-    # Step 5: Scheme selection (skip if loaded from CLI or --factors provided)
+    # Step 5: Scheme selection (skip if loaded from CLI or --factors provided or custom stock pool without scheme)
     scheme_loaded = scheme_loaded_from_cli
-    if not scheme_loaded and not cli_args.get("factors"):
+    use_custom_pool = bool(cfg.stock_codes)
+    if not scheme_loaded and not cli_args.get("factors") and not use_custom_pool:
         console.print("\n[bold]═══ 第 5 步: 方案选择 ═══[/bold]")
         scheme_loaded = step_scheme_selection(cfg)
 
@@ -905,7 +1072,7 @@ def run_wizard(cli_args: dict[str, Any] | None = None) -> None:
         console.print("  [dim]已从方案加载因子和权重[/dim]")
         skip_factor_weight = not confirm("是否调整因子和权重？", default=False)
 
-    if not skip_factor_weight:
+    if not skip_factor_weight and not use_custom_pool:
         console.print("\n[bold]═══ 第 6 步: 因子选择 ═══[/bold]")
         step_factor_selection(cfg)
 
@@ -914,13 +1081,19 @@ def run_wizard(cli_args: dict[str, Any] | None = None) -> None:
 
         # Offer to save as scheme after configuring factors/weights
         step_save_scheme(cfg)
-    else:
+    elif skip_factor_weight:
         # Show loaded config summary
         factors = get_registered_factors()
         show_factor_table(factors, cfg.enabled_factors, cfg.weights)
 
+    # Scoring: for custom stock pool, ask if scoring is needed
     console.print("\n[bold]═══ 第 8 步: 评分计算 ═══[/bold]")
-    step_scoring(cfg)
+    if use_custom_pool and not scheme_loaded:
+        cfg.do_scoring = confirm("是否执行因子评分？（选否则直接回测全部指定股票）", default=False)
+        if not cfg.do_scoring:
+            console.print("  [yellow]跳过因子评分，将对全部指定股票进行回测[/yellow]")
+    else:
+        step_scoring(cfg)
 
     console.print("\n[bold]═══ 第 9 步: 回测参数 ═══[/bold]")
     step_backtest_params(cfg)

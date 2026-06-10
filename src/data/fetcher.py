@@ -18,15 +18,17 @@ if DATA_SOURCE not in _VALID_SOURCES:
 if DATA_SOURCE == "tushare":
     from src.data.tushare_fetcher import (
         fetch_daily_basic,
+        fetch_fina_indicator,
+        get_all_stocks,
         get_index_constituents,
         get_index_daily,
         get_stock_daily,
-        get_stocks_batch,
         sync_stocks_data,
     )
 else:
     from src.data.akshare_fetcher import (
         fetch_daily_basic,
+        fetch_fina_indicator,
         get_index_constituents,
         get_index_daily,
         get_stock_daily,
@@ -36,9 +38,10 @@ else:
 
 __all__ = [
     "fetch_daily_basic",
+    "fetch_fina_indicator",
+    "get_all_stocks",
     "get_index_constituents",
     "get_index_daily",
     "get_stock_daily",
-    "get_stocks_batch",
     "sync_stocks_data",
 ]

@@ -41,7 +41,8 @@ def main():
         ),
     )
 
-    parser.add_argument("--index", type=str, help="股票指数代码 (000300/000905/000852/all)")
+    parser.add_argument("--index", type=str, help="股票指数代码，多选用逗号分隔 (000300,000905,000852,all)")
+    parser.add_argument("--stocks", type=str, help="自定义股票代码，逗号分隔 (如 600519,000858,601318)")
     parser.add_argument("--start", type=str, help="起始日期 (YYYYMMDD)")
     parser.add_argument("--end", type=str, help="结束日期 (YYYYMMDD)")
     parser.add_argument("--source", type=str, choices=["akshare", "tushare"], help="数据源")
@@ -62,20 +63,29 @@ def main():
     parser.add_argument("--scheme", type=str, help="方案名称 (从 schemes.yaml 加载因子和权重)")
     parser.add_argument("--backtest-start", type=str, help="回测起始日期 (YYYYMMDD)，默认使用数据全量范围")
     parser.add_argument("--backtest-end", type=str, help="回测结束日期 (YYYYMMDD)，默认使用数据全量范围")
+    parser.add_argument("--no-sync", action="store_true", help="跳过数据同步，直接使用缓存数据")
     parser.add_argument("--yes", "-y", action="store_true", help="跳过所有确认提示，自动执行回测")
 
     args = parser.parse_args()
 
+    # --stocks and --index are mutually exclusive
+    if args.index and args.stocks:
+        parser.error("不能同时指定 --index 和 --stocks")
+
     # Build CLI args dict (only non-None values)
     cli_args = {k: v for k, v in vars(args).items() if v is not None}
 
-    # Determine mode — scheme can also enable full CLI mode
+    # Determine mode — scheme or stocks can also enable full CLI mode
     has_any_arg = bool(cli_args)
     has_scheme = "scheme" in cli_args
-    is_full_cli = (
-        all(k in cli_args for k in ["index", "start", "end", "source"])
-        and ("factors" in cli_args or has_scheme)
+    has_stocks = "stocks" in cli_args
+    has_stock_source = "index" in cli_args or has_stocks
+    # Full CLI with --start/--end/--source/--scheme but no --index → all-stock universe
+    has_full_params = (
+        all(k in cli_args for k in ["start", "end", "source"])
+        and ("factors" in cli_args or has_scheme or has_stocks)
     )
+    is_full_cli = has_full_params and (has_stock_source or cli_args.get("yes"))
 
     if is_full_cli:
         # Full command-line mode — no interaction needed
@@ -83,15 +93,24 @@ def main():
         from src.scheme import load_scheme, list_schemes
 
         cfg = WizardConfig()
-        cfg.index_code = cli_args["index"]
+
+        # Stock source: --stocks or --index
+        if has_stocks:
+            from src.cli.wizard import parse_stock_codes
+            cfg.stock_codes = parse_stock_codes(cli_args["stocks"])
+            if has_scheme or "factors" in cli_args:
+                print("提示: 自定义股票池模式下忽略 --scheme/--factors，直接等权回测")
+        else:
+            idx_val = cli_args.get("index", "all")
+            cfg.index_codes = [i.strip() for i in idx_val.split(",") if i.strip()]
         cfg.start_date = cli_args["start"]
         cfg.end_date = cli_args["end"]
         cfg.data_source = cli_args["source"]
 
-        # Load scheme if specified
+        # Load scheme if specified (skip for custom stock pool)
         scheme_factors = None
         scheme_weights = None
-        if has_scheme:
+        if has_scheme and not has_stocks:
             scheme_name = cli_args["scheme"]
             try:
                 scheme_factors, scheme_weights = load_scheme(scheme_name)
@@ -99,8 +118,10 @@ def main():
                 print(f"错误: {e}")
                 sys.exit(1)
 
-        # Factors: --factors takes priority over scheme
-        if "factors" in cli_args:
+        # Factors: --factors takes priority over scheme (skip for custom stock pool)
+        if has_stocks:
+            cfg.do_scoring = False
+        elif "factors" in cli_args:
             cfg.enabled_factors = set(cli_args["factors"].split(","))
         elif scheme_factors is not None:
             cfg.enabled_factors = scheme_factors
@@ -159,6 +180,10 @@ def main():
         # Auto-confirm
         if cli_args.get("yes"):
             cfg.auto_confirm = True
+
+        # Skip data sync
+        if cli_args.get("no_sync"):
+            cfg.refresh_data = False
 
         run_pipeline(cfg)
     else:

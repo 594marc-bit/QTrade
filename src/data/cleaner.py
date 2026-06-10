@@ -1,13 +1,79 @@
-"""Data cleaning module for A-share daily price data."""
+"""Data cleaning module for A-share daily price data.
+
+All operations are fully vectorized (no per-stock loops) to avoid
+O(N_stocks × N_rows) performance degradation on large universes.
+"""
 
 import pandas as pd
 import numpy as np
 
-from src.config import MAX_CONSECUTIVE_MISSING, PRICE_CHANGE_LIMIT
+from src.config import MAX_CONSECUTIVE_MISSING, PRICE_CHANGE_LIMIT, STOCK_MIN_TRADING_DAYS, BSE_PREFIXES, ST_PATTERN
+
+
+def filter_low_quality_stocks(
+    df: pd.DataFrame,
+    min_trading_days: int = STOCK_MIN_TRADING_DAYS,
+    exclude_bse: bool = True,
+    exclude_st: bool = False,
+) -> tuple[pd.DataFrame, dict]:
+    """Filter out low-quality stocks from the universe.
+
+    Removes:
+    1. 北交所 (BSE) stocks — prefix 920/830/870 (if exclude_bse=True)
+    2. Stocks with fewer than min_trading_days of data
+    3. ST stocks (if exclude_st=True)
+
+    Args:
+        df: DataFrame with columns [trade_date, ts_code, ...].
+        min_trading_days: Minimum number of trading days required.
+        exclude_bse: Whether to exclude BSE stocks.
+        exclude_st: Whether to exclude ST stocks.
+
+    Returns:
+        Tuple of (filtered DataFrame, report dict).
+    """
+    original_stocks = df["ts_code"].nunique()
+    original_rows = len(df)
+    removed = {}
+
+    # 1. Remove BSE stocks (北交所)
+    if exclude_bse:
+        bse_mask = df["ts_code"].str.extract(r"^(\d+)")[0].str.startswith(BSE_PREFIXES)
+        bse_codes = set(df.loc[bse_mask, "ts_code"])
+        if bse_codes:
+            df = df[~bse_mask].copy()
+            removed["bse_stocks"] = len(bse_codes)
+            removed["bse_codes"] = sorted(bse_codes)[:20]  # Show first 20
+
+    # 2. Remove ST stocks
+    if exclude_st:
+        st_mask = df["name"].str.contains(ST_PATTERN, na=False)
+        st_codes = set(df.loc[st_mask, "ts_code"])
+        if st_codes:
+            df = df[~st_mask].copy()
+            removed["st_stocks"] = len(st_codes)
+
+    # 3. Remove stocks with insufficient data
+    if "is_trading" in df.columns:
+        day_count = df[df["is_trading"] == True].groupby("ts_code").size()
+    else:
+        day_count = df.groupby("ts_code").size()
+
+    low_data_codes = set(day_count[day_count < min_trading_days].index)
+    if low_data_codes:
+        df = df[~df["ts_code"].isin(low_data_codes)].copy()
+        removed["insufficient_data"] = len(low_data_codes)
+        removed["insufficient_data_codes"] = sorted(low_data_codes)[:20]
+
+    remaining_stocks = df["ts_code"].nunique()
+    removed["total_removed"] = original_stocks - remaining_stocks
+    removed["remaining_stocks"] = remaining_stocks
+
+    return df, removed
 
 
 def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
-    """Handle missing values: ffill short gaps, drop long consecutive gaps.
+    """Handle missing values via vectorized groupby ffill.
 
     Args:
         df: DataFrame with columns [trade_date, ts_code, open, high, low, close, vol, amount].
@@ -16,42 +82,18 @@ def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
         Cleaned DataFrame.
     """
     df = df.copy()
-
-    # For each stock, identify consecutive NaN runs
-    stocks = df["ts_code"].unique()
-    rows_to_drop = []
-
-    for stock in stocks:
-        mask = df["ts_code"] == stock
-        stock_idx = df.index[mask]
-
-        for col in ["open", "high", "low", "close", "vol", "amount"]:
-            series = df.loc[stock_idx, col]
-            is_nan = series.isna()
-
-            if not is_nan.any():
-                continue
-
-            # Find consecutive NaN groups
-            groups = (is_nan != is_nan.shift()).cumsum()
-            for group_id in groups[is_nan].unique():
-                group_mask = groups == group_id
-                group_len = group_mask.sum()
-
-                if group_len > MAX_CONSECUTIVE_MISSING:
-                    # Drop rows with long consecutive missing
-                    rows_to_drop.extend(series.index[group_mask].tolist())
-                # Short gaps will be ffilled below
-
-    # Drop long missing rows
-    if rows_to_drop:
-        df = df.drop(index=set(rows_to_drop))
-
-    # Forward fill short gaps per stock
     df = df.sort_values(["ts_code", "trade_date"])
-    for col in ["open", "high", "low", "close", "vol", "amount"]:
+
+    price_cols = ["open", "high", "low", "close", "vol", "amount"]
+
+    # Forward fill gaps within each stock (vectorized)
+    for col in price_cols:
         if col in df.columns:
-            df[col] = df.groupby("ts_code")[col].transform(lambda x: x.ffill())
+            df[col] = df.groupby("ts_code")[col].ffill()
+
+    # Drop rows with no close price after ffill (e.g. before listing)
+    if "close" in df.columns:
+        df = df.dropna(subset=["close"])
 
     return df
 
@@ -71,10 +113,10 @@ def mark_suspended(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_outliers(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter anomalous data points.
+    """Filter anomalous data points (vectorized).
 
     Removes rows where:
-    - Daily price change exceeds ±20%
+    - Daily price change exceeds ±PRICE_CHANGE_LIMIT
     - Volume is 0 but price changed (data error)
 
     Args:
@@ -84,32 +126,24 @@ def filter_outliers(df: pd.DataFrame) -> pd.DataFrame:
         Filtered DataFrame.
     """
     df = df.copy()
-
-    # Calculate daily returns per stock
     df = df.sort_values(["ts_code", "trade_date"])
-    df["prev_close"] = df.groupby("ts_code")["close"].shift(1)
-    df["daily_return"] = (df["close"] - df["prev_close"]) / df["prev_close"]
 
-    # Filter: daily return within ±20%
-    mask_return = df["daily_return"].between(-PRICE_CHANGE_LIMIT, PRICE_CHANGE_LIMIT) | df["prev_close"].isna()
+    # Vectorized daily returns
+    prev = df.groupby("ts_code")["close"].shift(1)
+    daily_ret = (df["close"] - prev) / prev
 
-    # Filter: not (volume=0 and price changed)
-    mask_vol_price = ~((df["vol"] == 0) & (df["close"] != df["prev_close"]) & df["prev_close"].notna())
+    # Filter masks (purely vectorized)
+    ok_return = daily_ret.between(-PRICE_CHANGE_LIMIT, PRICE_CHANGE_LIMIT) | prev.isna()
+    ok_vol = ~((df["vol"] == 0) & (df["close"] != prev) & prev.notna())
 
-    # Apply filters
-    df = df[mask_return & mask_vol_price].copy()
-
-    # Drop helper columns
-    df = df.drop(columns=["prev_close", "daily_return"])
-
+    df = df[ok_return & ok_vol].copy()
     return df
 
 
 def align_dates(df: pd.DataFrame) -> pd.DataFrame:
-    """Align all stocks to a unified trading calendar.
+    """Align all stocks to a unified trading calendar (vectorized).
 
-    Finds the union of all trading dates and reindexes each stock,
-    filling missing dates with NaN.
+    Uses MultiIndex.from_product to avoid per-stock loops.
 
     Args:
         df: DataFrame with trade_date, ts_code columns.
@@ -117,22 +151,19 @@ def align_dates(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with all stocks on the same date index.
     """
-    # Get the full trading calendar (union of all dates)
     all_dates = sorted(df["trade_date"].unique())
+    all_stocks = df["ts_code"].unique()
 
-    stocks = df["ts_code"].unique()
-    aligned_dfs = []
+    full_idx = pd.MultiIndex.from_product(
+        [all_dates, all_stocks],
+        names=["trade_date", "ts_code"],
+    )
 
-    for stock in stocks:
-        stock_df = df[df["ts_code"] == stock].copy()
-        stock_df = stock_df.set_index("trade_date")
-        # Reindex to full calendar
-        stock_df = stock_df.reindex(all_dates)
-        stock_df["ts_code"] = stock
-        stock_df.index.name = "trade_date"
-        aligned_dfs.append(stock_df.reset_index())
-
-    result = pd.concat(aligned_dfs, ignore_index=True)
+    result = (
+        df.set_index(["trade_date", "ts_code"])
+        .reindex(full_idx)
+        .reset_index()
+    )
     return result
 
 
@@ -159,11 +190,13 @@ def validate_data(df: pd.DataFrame) -> dict:
 
     # Check daily returns
     df_sorted = df.sort_values(["ts_code", "trade_date"])
-    df_sorted["prev_close"] = df_sorted.groupby("ts_code")["close"].shift(1)
-    df_sorted["daily_return"] = (df_sorted["close"] - df_sorted["prev_close"]) / df_sorted["prev_close"]
-    extreme_returns = df_sorted[df_sorted["daily_return"].abs() > PRICE_CHANGE_LIMIT]
+    prev = df_sorted.groupby("ts_code")["close"].shift(1)
+    daily_ret = (df_sorted["close"] - prev) / prev
+    extreme_returns = df_sorted[daily_ret.abs() > PRICE_CHANGE_LIMIT]
     if not extreme_returns.empty:
-        issues.append(f"Found {len(extreme_returns)} rows with daily return > ±{PRICE_CHANGE_LIMIT*100:.0f}%")
+        issues.append(
+            f"Found {len(extreme_returns)} rows with daily return > ±{PRICE_CHANGE_LIMIT*100:.0f}%"
+        )
 
     # Check stock count per day
     daily_count = df.groupby("trade_date")["ts_code"].nunique()
@@ -183,22 +216,36 @@ def validate_data(df: pd.DataFrame) -> dict:
     }
 
 
-def clean_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+def clean_pipeline(
+    df: pd.DataFrame,
+    filter_stocks: bool = True,
+    min_trading_days: int = STOCK_MIN_TRADING_DAYS,
+) -> tuple[pd.DataFrame, dict]:
     """Run the full cleaning pipeline.
 
-    Order: fill missing -> filter outliers -> mark suspended -> align dates -> validate.
+    Order: filter low-quality stocks -> fill missing -> filter outliers ->
+    mark suspended -> align dates -> validate.
 
     Args:
         df: Raw DataFrame from fetcher.
+        filter_stocks: Whether to apply stock quality filter.
+        min_trading_days: Minimum trading days for a stock to be included.
 
     Returns:
         Tuple of (cleaned DataFrame, validation report dict).
     """
+    filter_report = {}
+    if filter_stocks:
+        df, filter_report = filter_low_quality_stocks(
+            df, min_trading_days=min_trading_days,
+        )
+
     df = fill_missing_values(df)
     df = filter_outliers(df)
     df = mark_suspended(df)
     df = align_dates(df)
 
     report = validate_data(df)
+    report["filter"] = filter_report
 
     return df, report
