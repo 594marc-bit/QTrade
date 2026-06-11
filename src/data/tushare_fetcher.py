@@ -335,10 +335,9 @@ def sync_adj_factor_for_stocks(
                 adj["adj_factor"] = pd.to_numeric(adj["adj_factor"], errors="coerce")
                 saved = save_adj_factor(adj[["ts_code", "trade_date", "adj_factor"]])
                 total_saved += saved
+            time.sleep(TUSHARE_FETCH_INTERVAL)
         except Exception:
             failed.append(ts_code)
-
-        time.sleep(TUSHARE_FETCH_INTERVAL)
 
     if failed:
         print(f"  adj_factor failed: {len(failed)} stocks: {failed[:10]}...")
@@ -437,16 +436,9 @@ def sync_stocks_data(
 
     raw_prices = pd.concat(all_dfs, ignore_index=True)
 
-    # Step 2: Ensure adj_factor is complete for all stocks in the fetched data
+    # Step 2: Load adj_factor from DB and apply qfq to raw prices
+    # (adj_factor is synced per user's stock universe before sync_stocks_data is called)
     all_codes = sorted(raw_prices["ts_code"].unique().tolist())
-    if all_codes:
-        adj_saved = sync_adj_factor_for_stocks(
-            all_codes, start_date=start_date, end_date=end_date
-        )
-        if adj_saved:
-            print(f"  Saved {adj_saved} adj_factor rows")
-
-    # Step 3: Load adj_factor and apply qfq to raw prices
     adj_all = load_adj_factor(
         ts_codes=all_codes,
         start_date=start_date,

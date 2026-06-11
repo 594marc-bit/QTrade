@@ -558,7 +558,6 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
         load_daily_price,
         merge_fundamentals,
         save_daily_basic,
-        save_daily_price,
     )
     from src.factors.scorer import compute_total_score, select_top_n, standardize_factors
     from src.factors.ic_analyzer import compute_future_return, evaluate_factor
@@ -637,6 +636,17 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
         code2name = dict(zip(merged["ts_code"], merged["name"]))
     console.print(f"  共 {len(ts_codes)} 只股票")
 
+    # Sync adj_factor for selected stocks only (Tushare, per-stock API)
+    # Must happen before sync_stocks_data so qfq can be applied
+    if cfg.data_source == "tushare" and TUSHARE_TOKEN and cfg.refresh_data and ts_codes:
+        from src.data.tushare_fetcher import sync_adj_factor_for_stocks
+        console.print("\n[bold green]▶ 同步复权因子...[/]")
+        adj_saved = sync_adj_factor_for_stocks(
+            ts_codes, start_date=cfg.start_date, end_date=cfg.end_date
+        )
+        if adj_saved:
+            console.print(f"  已更新 {adj_saved} 条复权因子记录")
+
     # Step 2: Data sync (always full market, universe filtering happens at load)
     console.print("\n[bold green]▶ 同步数据...[/]")
     if cfg.refresh_data:
@@ -681,7 +691,6 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
             console.print(f"    - 数据不足 (<{STOCK_MIN_TRADING_DAYS}天): {filter_info['insufficient_data']} 只")
         console.print(f"  剩余: {remaining} 只股票")
     console.print(f"  数据清洗后: {len(df)} 行, {df['ts_code'].nunique()} 只股票")
-    save_daily_price(df)
 
     # Step 4: Fundamentals
     console.print("\n[bold green]▶ 获取基本面数据...[/]")
