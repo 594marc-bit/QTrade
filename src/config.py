@@ -77,6 +77,13 @@ PRICE_CHANGE_LIMIT = 0.20  # ±20% daily change limit
 STOCK_MIN_TRADING_DAYS = 240  # minimum trading days required for a stock
 BSE_PREFIXES = ("920", "830", "870")  # 北交所股票前缀 (ts_code 如 920XXX.BJ)
 ST_PATTERN = "ST"  # ST 股票标记
+DELIST_PATTERN = "退"  # 退市股票标记（名称含"退"）
+IPO_MIN_MONTHS = 6  # 新股过滤：上市不足N个月的排除
+
+# 默认启用所有质量过滤
+EXCLUDE_ST = True
+EXCLUDE_DELIST = True
+EXCLUDE_NEW_IPO = True
 
 # Factor defaults
 MOMENTUM_LOOKBACK = 20

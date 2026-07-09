@@ -7,27 +7,41 @@ O(N_stocks × N_rows) performance degradation on large universes.
 import pandas as pd
 import numpy as np
 
-from src.config import MAX_CONSECUTIVE_MISSING, PRICE_CHANGE_LIMIT, STOCK_MIN_TRADING_DAYS, BSE_PREFIXES, ST_PATTERN
+from src.config import (
+    MAX_CONSECUTIVE_MISSING, PRICE_CHANGE_LIMIT, STOCK_MIN_TRADING_DAYS,
+    BSE_PREFIXES, ST_PATTERN, DELIST_PATTERN, IPO_MIN_MONTHS,
+    EXCLUDE_ST, EXCLUDE_DELIST, EXCLUDE_NEW_IPO,
+)
 
 
 def filter_low_quality_stocks(
     df: pd.DataFrame,
     min_trading_days: int = STOCK_MIN_TRADING_DAYS,
     exclude_bse: bool = True,
-    exclude_st: bool = False,
+    exclude_st: bool = EXCLUDE_ST,
+    exclude_delist: bool = EXCLUDE_DELIST,
+    exclude_new_ipo: bool = EXCLUDE_NEW_IPO,
+    ipo_min_months: int = IPO_MIN_MONTHS,
+    end_date: str | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Filter out low-quality stocks from the universe.
 
     Removes:
     1. 北交所 (BSE) stocks — prefix 920/830/870 (if exclude_bse=True)
-    2. Stocks with fewer than min_trading_days of data
-    3. ST stocks (if exclude_st=True)
+    2. ST stocks — name contains "ST" (if exclude_st=True)
+    3. Delisting stocks — name contains "退" (if exclude_delist=True)
+    4. New IPO stocks — listed < ipo_min_months ago (if exclude_new_ipo=True)
+    5. Stocks with fewer than min_trading_days of data
 
     Args:
         df: DataFrame with columns [trade_date, ts_code, ...].
         min_trading_days: Minimum number of trading days required.
         exclude_bse: Whether to exclude BSE stocks.
         exclude_st: Whether to exclude ST stocks.
+        exclude_delist: Whether to exclude delisting stocks.
+        exclude_new_ipo: Whether to exclude newly listed stocks.
+        ipo_min_months: Minimum months since listing.
+        end_date: Reference date for IPO cutoff (YYYYMMDD). Uses max(trade_date) if None.
 
     Returns:
         Tuple of (filtered DataFrame, report dict).
@@ -46,14 +60,49 @@ def filter_low_quality_stocks(
             removed["bse_codes"] = sorted(bse_codes)[:20]  # Show first 20
 
     # 2. Remove ST stocks
-    if exclude_st:
+    if exclude_st and "name" in df.columns:
         st_mask = df["name"].str.contains(ST_PATTERN, na=False)
         st_codes = set(df.loc[st_mask, "ts_code"])
         if st_codes:
             df = df[~st_mask].copy()
             removed["st_stocks"] = len(st_codes)
+    elif exclude_st and "name" not in df.columns:
+        # Name column not available — try to load from stock_basic cache
+        st_codes = _filter_codes_by_name_from_cache(df, ST_PATTERN)
+        if st_codes:
+            df = df[~df["ts_code"].isin(st_codes)].copy()
+            removed["st_stocks"] = len(st_codes)
 
-    # 3. Remove stocks with insufficient data
+    # 3. Remove delisting stocks (名称含"退")
+    if exclude_delist:
+        delist_codes = set()
+        if "name" in df.columns:
+            delist_mask = df["name"].str.contains(DELIST_PATTERN, na=False)
+            delist_codes = set(df.loc[delist_mask, "ts_code"])
+        else:
+            delist_codes = _filter_codes_by_name_from_cache(df, DELIST_PATTERN)
+        if delist_codes:
+            df = df[~df["ts_code"].isin(delist_codes)].copy()
+            removed["delist_stocks"] = len(delist_codes)
+
+    # 4. Remove new IPO stocks (上市不足N个月)
+    if exclude_new_ipo:
+        ref_date = end_date if end_date else df["trade_date"].max()
+        if isinstance(ref_date, str):
+            from datetime import datetime, timedelta
+            ref_dt = datetime.strptime(ref_date[:8], "%Y%m%d")
+        else:
+            from datetime import datetime, timedelta
+            ref_dt = datetime.strptime(str(ref_date)[:8], "%Y%m%d")
+        cutoff = (ref_dt - timedelta(days=ipo_min_months * 30)).strftime("%Y%m%d")
+
+        first_trade = df.groupby("ts_code")["trade_date"].min()
+        new_ipo_codes = set(first_trade[first_trade > cutoff].index)
+        if new_ipo_codes:
+            df = df[~df["ts_code"].isin(new_ipo_codes)].copy()
+            removed["new_ipo_stocks"] = len(new_ipo_codes)
+
+    # 5. Remove stocks with insufficient data
     if "is_trading" in df.columns:
         day_count = df[df["is_trading"] == True].groupby("ts_code").size()
     else:
@@ -70,6 +119,27 @@ def filter_low_quality_stocks(
     removed["remaining_stocks"] = remaining_stocks
 
     return df, removed
+
+
+def _filter_codes_by_name_from_cache(df: pd.DataFrame, pattern: str) -> set[str]:
+    """Try to find stock codes matching a name pattern using cached stock_basic data.
+
+    Returns set of ts_codes that match the pattern.
+    """
+    try:
+        import pickle
+        from pathlib import Path
+        cache_path = Path(__file__).parent.parent.parent / "data" / "all_stocks_tushare.pkl"
+        if cache_path.exists():
+            with open(cache_path, "rb") as f:
+                basic = pickle.load(f)
+            if "name" in basic.columns and "ts_code" in basic.columns:
+                bad_codes = set(basic.loc[basic["name"].str.contains(pattern, na=False), "ts_code"])
+                existing = bad_codes & set(df["ts_code"].unique())
+                return existing
+    except Exception:
+        pass
+    return set()
 
 
 def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
@@ -220,6 +290,11 @@ def clean_pipeline(
     df: pd.DataFrame,
     filter_stocks: bool = True,
     min_trading_days: int = STOCK_MIN_TRADING_DAYS,
+    exclude_st: bool = EXCLUDE_ST,
+    exclude_delist: bool = EXCLUDE_DELIST,
+    exclude_new_ipo: bool = EXCLUDE_NEW_IPO,
+    ipo_min_months: int = IPO_MIN_MONTHS,
+    end_date: str | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Run the full cleaning pipeline.
 
@@ -230,6 +305,11 @@ def clean_pipeline(
         df: Raw DataFrame from fetcher.
         filter_stocks: Whether to apply stock quality filter.
         min_trading_days: Minimum trading days for a stock to be included.
+        exclude_st: Whether to exclude ST stocks.
+        exclude_delist: Whether to exclude delisting stocks.
+        exclude_new_ipo: Whether to exclude newly listed stocks.
+        ipo_min_months: Minimum months since listing.
+        end_date: Reference date for IPO cutoff.
 
     Returns:
         Tuple of (cleaned DataFrame, validation report dict).
@@ -238,6 +318,9 @@ def clean_pipeline(
     if filter_stocks:
         df, filter_report = filter_low_quality_stocks(
             df, min_trading_days=min_trading_days,
+            exclude_st=exclude_st, exclude_delist=exclude_delist,
+            exclude_new_ipo=exclude_new_ipo, ipo_min_months=ipo_min_months,
+            end_date=end_date,
         )
 
     df = fill_missing_values(df)

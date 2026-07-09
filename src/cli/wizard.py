@@ -679,12 +679,20 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
 
     # Step 3: Clean (includes stock quality filtering)
     console.print("\n[bold green]▶ 清洗数据 & 过滤低质量股票...[/]")
-    df, report = clean_pipeline(df, filter_stocks=True)
+    df, report = clean_pipeline(df, filter_stocks=True, end_date=cfg.end_date)
     filter_info = report.get("filter", {})
     if filter_info:
         total_removed = filter_info.get("total_removed", 0)
         remaining = filter_info.get("remaining_stocks", df["ts_code"].nunique())
         console.print(f"  过滤: 剔除 {total_removed} 只低质量股票")
+        if "bse_stocks" in filter_info:
+            console.print(f"    - 北交所: {filter_info['bse_stocks']} 只")
+        if "st_stocks" in filter_info and filter_info["st_stocks"]:
+            console.print(f"    - ST股票: {filter_info['st_stocks']} 只")
+        if "delist_stocks" in filter_info and filter_info["delist_stocks"]:
+            console.print(f"    - 退市股票: {filter_info['delist_stocks']} 只")
+        if "new_ipo_stocks" in filter_info and filter_info["new_ipo_stocks"]:
+            console.print(f"    - 新股(上市<6月): {filter_info['new_ipo_stocks']} 只")
         if "bse_stocks" in filter_info:
             console.print(f"    - 北交所: {filter_info['bse_stocks']} 只")
         if "insufficient_data" in filter_info:

@@ -1,19 +1,3 @@
-# 可用因子名参考
-# ──────────────────────────────────────────────────────
-# 因子名               权重键名                  说明
-# momentum_20d          momentum_score           20日动量
-# vol_ratio             vol_ratio_score          量比
-# volatility_20d        volatility_score         20日波动率
-# rsi_14d               rsi_score                14日RSI
-# ma_deviation_20d      ma_deviation_score       均线偏离
-# turnover_momentum_10d turnover_momentum_score  换手动量
-# intraday_range_10d    intraday_range_score     日内波幅
-# pe_ttm_rank           pe_ttm_rank_score        PE分位
-# pb_rank               pb_rank_score            PB分位
-# return_20d            return_20d_score         20日收益
-# trend_60d             trend_score              60日趋势
-# ──────────────────────────────────────────────────────
-
 schemes:
   default:
     description: 默认方案
@@ -51,10 +35,10 @@ schemes:
     - volatility_20d
     - roe_yoy_rank
     weights:
-      pe_ttm_rank_score: -0.20
+      pe_ttm_rank_score: -0.2
       intraday_range_score: -0.15
       volatility_score: -0.15
-      roe_yoy_rank_score: 0.30
+      roe_yoy_rank_score: 0.3
   momentum:
     description: 动量反转策略
     factors:
@@ -80,8 +64,44 @@ schemes:
     - volatility_20d
     weights:
       roe_yoy_rank_score: 0.25
-      momentum_score: 0.20
-      trend_score: 0.10
+      momentum_score: 0.2
+      trend_score: 0.1
       pe_ttm_rank_score: -0.15
-      intraday_range_score: -0.10
-      volatility_score: -0.10
+      intraday_range_score: -0.1
+      volatility_score: -0.1
+  多因子精选版0623:
+    description: 多因子精选版（6因子，基本面锚+动量反转+估值双验+资金异动，行业中性）
+    factors:
+    - momentum_20d
+    - pb_rank
+    - pe_ttm_rank
+    - roe_yoy_rank
+    - trend_60d
+    - turnover_momentum_10d
+    weights:
+      roe_yoy_rank_score: 0.25
+      momentum_score: -0.15
+      trend_score: -0.1
+      pe_ttm_rank_score: -0.15
+      pb_rank_score: -0.1
+      turnover_momentum_score: 0.1
+  精简反转版0708:
+    description: 精简反转版（权重优化：ROE:Return:RSI = 1:2:1，全周期最优）
+    factors:
+    - roe_yoy_rank
+    - rsi_14d
+    - return_20d
+    weights:
+      roe_yoy_rank_score: 0.25
+      rsi_score: -0.25
+      return_score: -0.50
+  精简自适应版0708:
+    description: 精简自适应版（3因子+滚动IC自适应权重，中证1000）
+    factors:
+    - roe_yoy_rank
+    - rsi_14d
+    - return_20d
+    weights:
+      roe_yoy_rank_score: 0.50
+      rsi_score: -0.25
+      return_score: -0.25

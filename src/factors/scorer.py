@@ -65,25 +65,53 @@ def standardize_factors(df: pd.DataFrame, factor_cols: list[str]) -> pd.DataFram
 def compute_total_score(
     df: pd.DataFrame,
     weights: dict[str, float] | None = None,
+    regime_weights: dict[str, dict[str, float]] | None = None,
 ) -> pd.DataFrame:
     """Compute weighted total score from standardized factor scores.
 
+    If regime_weights is provided, applies different weight sets based on
+    the 'regime' column. Falls back to uniform weights for dates without
+    regime labels.
+
     Args:
-        df: DataFrame with factor score columns.
+        df: DataFrame with factor score columns (and optionally 'regime' column).
         weights: Dict mapping score column name to weight. Defaults to DEFAULT_WEIGHTS.
+        regime_weights: Dict mapping regime name to weight dict, e.g.
+            {"trend": {"roe_yoy_rank_score": 0.30, ...}, "mean_revert": {...}}.
 
     Returns:
         DataFrame with added total_score column.
     """
-    if weights is None:
-        weights = DEFAULT_WEIGHTS
-
     df = df.copy()
     df["total_score"] = 0.0
 
-    for score_col, weight in weights.items():
-        if score_col in df.columns:
-            df["total_score"] += df[score_col].fillna(0) * weight
+    if regime_weights and "regime" in df.columns:
+        # Apply regime-dependent weights
+        for regime, rw in regime_weights.items():
+            mask = df["regime"] == regime
+            if not mask.any():
+                continue
+            for score_col, weight in rw.items():
+                if score_col in df.columns:
+                    df.loc[mask, "total_score"] += (
+                        df.loc[mask, score_col].fillna(0) * weight
+                    )
+
+        # Fallback: dates where regime is NaN or not in regime_weights
+        fallback_mask = df["total_score"] == 0.0
+        if fallback_mask.any() and weights:
+            for score_col, weight in (weights or DEFAULT_WEIGHTS).items():
+                if score_col in df.columns:
+                    df.loc[fallback_mask, "total_score"] += (
+                        df.loc[fallback_mask, score_col].fillna(0) * weight
+                    )
+    else:
+        # Uniform weights
+        if weights is None:
+            weights = DEFAULT_WEIGHTS
+        for score_col, weight in weights.items():
+            if score_col in df.columns:
+                df["total_score"] += df[score_col].fillna(0) * weight
 
     return df
 
