@@ -1,12 +1,12 @@
 """Unified data fetching dispatcher.
 
-Routes data requests to the appropriate data source (AKShare or Tushare)
-based on the DATA_SOURCE configuration in config.ini.    """
+Routes data requests to the appropriate data source (AKShare, Tushare or
+QMT Windows API) based on the DATA_SOURCE configuration in config.ini.    """
 
 from src.config import DATA_SOURCE
 
 # Validate data source
-_VALID_SOURCES = ("akshare", "tushare")
+_VALID_SOURCES = ("akshare", "tushare", "qmt")
 if DATA_SOURCE not in _VALID_SOURCES:
     raise ValueError(
         f"Invalid DATA_SOURCE '{DATA_SOURCE}'. "
@@ -17,6 +17,16 @@ if DATA_SOURCE not in _VALID_SOURCES:
 # Import the selected backend
 if DATA_SOURCE == "tushare":
     from src.data.tushare_fetcher import (
+        fetch_daily_basic,
+        fetch_fina_indicator,
+        get_all_stocks,
+        get_index_constituents,
+        get_index_daily,
+        get_stock_daily,
+        sync_stocks_data,
+    )
+elif DATA_SOURCE == "qmt":
+    from src.data.qmt_fetcher import (
         fetch_daily_basic,
         fetch_fina_indicator,
         get_all_stocks,

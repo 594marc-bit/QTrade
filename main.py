@@ -50,6 +50,7 @@ import src.factors.intraday_range
 import src.factors.valuation
 import src.factors.return_20d
 import src.factors.trend_60d
+import src.factors.minute_factors  # 分钟级日内微观结构因子
 
 
 def run_pipeline(

@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QTrade + QMT 自动化量化交易系统 — 架构文档</title>
+<style>
+  /* ===== Reset & Base ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0a0e17;
+    color: #c8d6e5;
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ===== Background Effects ===== */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at 20% 20%, rgba(0, 180, 216, 0.06) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 60%, rgba(114, 9, 183, 0.05) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 90%, rgba(247, 37, 133, 0.04) 0%, transparent 50%);
+    pointer-events: none; z-index: 0;
+  }
+
+  .grid-bg {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(0, 180, 216, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 180, 216, 0.04) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  /* ===== Layout ===== */
+  .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+  /* ===== Hero ===== */
+  .hero {
+    text-align: center;
+    padding: 80px 0 60px;
+    position: relative; z-index: 1;
+  }
+  .hero h1 {
+    font-size: 2.6rem; font-weight: 800;
+    background: linear-gradient(135deg, #00b4d8 0%, #90e0ef 40%, #7209b7 70%, #f72585 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: 0.02em;
+    margin-bottom: 12px;
+  }
+  .hero .subtitle {
+    font-size: 1.05rem; color: #64748b; letter-spacing: 0.08em; font-weight: 500;
+  }
+  .hero .badge-row {
+    display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 600;
+    border: 1px solid rgba(0, 180, 216, 0.25);
+    background: rgba(0, 180, 216, 0.08); color: #90e0ef;
+  }
+  .badge.purple { border-color: rgba(114, 9, 183, 0.3); background: rgba(114, 9, 183, 0.08); color: #c77dff; }
+  .badge.pink   { border-color: rgba(247, 37, 133, 0.3); background: rgba(247, 37, 133, 0.08); color: #ff6b9d; }
+  .badge.green  { border-color: rgba(6, 214, 160, 0.3); background: rgba(6, 214, 160, 0.08); color: #06d6a0; }
+
+  /* ===== Section ===== */
+  .section {
+    margin: 60px 0; position: relative; z-index: 1;
+  }
+  .section-title {
+    font-size: 1.7rem; font-weight: 700; margin-bottom: 8px;
+    color: #e2e8f0;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .section-title .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 10px;
+    background: linear-gradient(135deg, #00b4d8, #7209b7);
+    color: #fff; font-size: 0.95rem; font-weight: 800; flex-shrink: 0;
+  }
+  .section-desc {
+    color: #64748b; font-size: 0.95rem; margin-bottom: 28px;
+    padding-left: 48px;
+  }
+
+  /* ===== Architecture Diagram (SVG) ===== */
+  .arch-diagram {
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(0, 180, 216, 0.15);
+    border-radius: 16px;
+    padding: 20px;
+    overflow-x: auto;
+    margin: 28px 0;
+    backdrop-filter: blur(10px);
+  }
+  .arch-diagram svg { display: block; min-width: 900px; }
+  .arch-diagram text { font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+  /* ===== Card ===== */
+  .card {
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(0, 180, 216, 0.12);
+    border-radius: 12px; padding: 24px 28px; margin: 16px 0;
+    backdrop-filter: blur(8px);
+    transition: border-color 0.3s;
+  }
+  .card:hover { border-color: rgba(0, 180, 216, 0.3); }
+  .card h3 {
+    font-size: 1.15rem; font-weight: 700; color: #90e0ef;
+    margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .card h3 .icon { font-size: 1.3rem; }
+
+  /* ===== Code Block ===== */
+  pre {
+    background: rgba(2, 6, 14, 0.8);
+    border: 1px solid rgba(0, 180, 216, 0.15);
+    border-radius: 10px; padding: 18px 22px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.65;
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code", monospace;
+    color: #c8d6e5;
+    margin: 12px 0;
+  }
+  code {
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code", monospace;
+    font-size: 0.88em;
+    background: rgba(0, 180, 216, 0.1); color: #90e0ef;
+    padding: 2px 6px; border-radius: 4px;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; border-radius: 0; }
+
+  /* ===== Table ===== */
+  .table-wrap {
+    overflow-x: auto; margin: 16px 0;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 180, 216, 0.12);
+  }
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: 0.9rem; min-width: 700px;
+  }
+  thead { background: rgba(0, 180, 216, 0.08); }
+  th {
+    text-align: left; padding: 12px 16px; font-weight: 700;
+    color: #90e0ef; font-size: 0.82rem; letter-spacing: 0.05em; text-transform: uppercase;
+    border-bottom: 1px solid rgba(0, 180, 216, 0.2);
+  }
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(0, 180, 216, 0.06);
+  }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: rgba(0, 180, 216, 0.04); }
+
+  /* ===== State machine ===== */
+  .state-machine {
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    justify-content: center; padding: 28px 0;
+  }
+  .state-node {
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid rgba(0, 180, 216, 0.25);
+    border-radius: 10px; padding: 10px 20px;
+    font-weight: 700; font-size: 0.9rem; color: #90e0ef;
+    position: relative;
+  }
+  .state-node.terminal {
+    border-color: rgba(6, 214, 160, 0.3); color: #06d6a0;
+  }
+  .state-node.danger {
+    border-color: rgba(247, 37, 133, 0.3); color: #ff6b9d;
+  }
+  .state-arrow {
+    color: #475569; font-size: 1.2rem; font-weight: 700;
+  }
+
+  /* ===== Network topology ===== */
+  .net-diagram {
+    display: grid; grid-template-columns: 1fr auto 1fr; gap: 20px;
+    align-items: center; margin: 24px 0;
+  }
+  @media (max-width: 800px) { .net-diagram { grid-template-columns: 1fr; } }
+
+  /* ===== Horizontal rule ===== */
+  hr {
+    border: none; border-top: 1px solid rgba(0, 180, 216, 0.1);
+    margin: 40px 0;
+  }
+
+  /* ===== Sub-section ===== */
+  .sub-title {
+    font-size: 1.1rem; font-weight: 700; color: #e2e8f0;
+    margin: 28px 0 12px; padding-left: 12px;
+    border-left: 3px solid #00b4d8;
+  }
+
+  /* ===== Factor grid ===== */
+  .factor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 10px; margin: 16px 0;
+  }
+  .factor-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    background: rgba(0, 180, 216, 0.04);
+    border: 1px solid rgba(0, 180, 216, 0.08);
+    border-radius: 8px; font-size: 0.88rem;
+  }
+  .factor-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .factor-name { color: #e2e8f0; font-weight: 600; }
+  .factor-file { color: #64748b; font-size: 0.78rem; margin-left: auto; }
+
+  /* ===== Footer ===== */
+  .footer {
+    text-align: center; padding: 40px 0;
+    color: #475569; font-size: 0.82rem;
+    border-top: 1px solid rgba(0, 180, 216, 0.06);
+    margin-top: 60px;
+  }
+
+  /* ===== ASCII block preserved styling ===== */
+  .ascii-block {
+    background: rgba(2, 6, 14, 0.8);
+    border: 1px solid rgba(0, 180, 216, 0.15);
+    border-radius: 10px; padding: 18px 22px;
+    overflow-x: auto; font-size: 0.78rem; line-height: 1.5;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    color: #90e0ef; white-space: pre; margin: 16px 0;
+  }
+
+  /* ===== Ul/Li ===== */
+  ul, ol { padding-left: 24px; margin: 8px 0; }
+  li { margin: 4px 0; color: #94a3b8; }
+  li strong { color: #c8d6e5; }
+
+  /* ===== Links ===== */
+  a { color: #90e0ef; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ===== Pulse animation for live indicators ===== */
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  .live-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: #06d6a0; margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+
+  /* ===== Edit Mode ===== */
+  body.editing .card,
+  body.editing .section-desc,
+  body.editing .sub-title,
+  body.editing p,
+  body.editing li,
+  body.editing th,
+  body.editing td,
+  body.editing pre code,
+  body.editing .footer p,
+  body.editing .hero h1,
+  body.editing .hero .subtitle,
+  body.editing .hero .badge,
+  body.editing .section-title,
+  body.editing h3 {
+    outline: 1px dashed rgba(0, 180, 216, 0.2);
+    outline-offset: 2px;
+    cursor: text;
+  }
+  body.editing .card { outline-color: rgba(0, 180, 216, 0.25); }
+  body.editing pre code { outline-color: rgba(6, 214, 160, 0.3); cursor: text; display: block; }
+  body.editing td, body.editing th { outline-color: rgba(114, 9, 183, 0.2); }
+
+  body.editing .arch-diagram svg text { cursor: pointer; }
+  body.editing .arch-diagram svg text:hover { fill: #fff !important; }
+
+  /* Inline SVG text editor */
+  .svg-inline-editor {
+    position: absolute; z-index: 1000;
+    background: #0f172a; border: 1px solid #00b4d8; border-radius: 6px;
+    padding: 6px 10px; color: #e2e8f0; font-size: 11px;
+    font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    min-width: 120px; outline: none; box-shadow: 0 0 20px rgba(0,180,216,0.3);
+  }
+
+  /* ===== Toolbar ===== */
+  .toolbar {
+    position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+    display: flex; gap: 8px;
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid rgba(0, 180, 216, 0.2);
+    border-radius: 14px; padding: 6px;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+  .toolbar button {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 16px; border-radius: 10px; border: 1px solid transparent;
+    font-size: 0.82rem; font-weight: 600; cursor: pointer;
+    font-family: inherit; transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .btn-edit {
+    background: rgba(0, 180, 216, 0.12); color: #90e0ef;
+    border-color: rgba(0, 180, 216, 0.25);
+  }
+  .btn-edit:hover { background: rgba(0, 180, 216, 0.2); }
+  body.editing .btn-edit {
+    background: rgba(247, 37, 133, 0.15); color: #ff6b9d;
+    border-color: rgba(247, 37, 133, 0.35);
+  }
+
+  .btn-save {
+    background: rgba(6, 214, 160, 0.12); color: #06d6a0;
+    border-color: rgba(6, 214, 160, 0.25);
+  }
+  .btn-save:hover { background: rgba(6, 214, 160, 0.2); }
+  .btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-export {
+    background: rgba(114, 9, 183, 0.12); color: #c77dff;
+    border-color: rgba(114, 9, 183, 0.25);
+  }
+  .btn-export:hover { background: rgba(114, 9, 183, 0.2); }
+
+  .toast {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 99999;
+    padding: 10px 24px; border-radius: 10px; font-size: 0.85rem; font-weight: 600;
+    pointer-events: none; opacity: 0; transition: opacity 0.3s;
+  }
+  .toast.show { opacity: 1; }
+  .toast.success { background: rgba(6, 214, 160, 0.15); color: #06d6a0; border: 1px solid rgba(6, 214, 160, 0.3); }
+  .toast.info { background: rgba(0, 180, 216, 0.15); color: #90e0ef; border: 1px solid rgba(0, 180, 216, 0.3); }
+
+  @media (max-width: 600px) {
+    .toolbar { bottom: 12px; right: 12px; gap: 4px; padding: 4px; }
+    .toolbar button { padding: 6px 10px; font-size: 0.75rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+
+<!-- ===== HERO ===== -->
+<div class="hero">
+  <h1>QTrade + QMT 自动化量化交易系统</h1>
+  <p class="subtitle">—— 系统架构文档 ——</p>
+  <div class="badge-row">
+    <span class="badge">🐍 Python 3</span>
+    <span class="badge purple">⚡ FastAPI</span>
+    <span class="badge pink">📡 WebSocket</span>
+    <span class="badge green">🗄️ SQLite</span>
+    <span class="badge">📊 18+ 因子</span>
+    <span class="badge purple">🔄 自适应权重</span>
+    <span class="badge pink">🛡️ 风控引擎</span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ===== SYSTEM ARCHITECTURE OVERVIEW (SVG) ===== -->
+<div class="section">
+  <div class="section-title"><span class="num">🏗️</span> 系统架构总览</div>
+  <p class="section-desc">四层架构：数据层 → 策略 &amp; 信号层 → 交易信号中转层 → QMT 执行层</p>
+
+  <div class="arch-diagram">
+    <svg viewBox="0 0 1000 900" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="gLayer1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00b4d8" stop-opacity="0.15"/><stop offset="100%" stop-color="#7209b7" stop-opacity="0.1"/></linearGradient>
+        <linearGradient id="gLayer2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#7209b7" stop-opacity="0.15"/><stop offset="100%" stop-color="#f72585" stop-opacity="0.1"/></linearGradient>
+        <linearGradient id="gLayer3" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#f72585" stop-opacity="0.15"/><stop offset="100%" stop-color="#06d6a0" stop-opacity="0.1"/></linearGradient>
+        <linearGradient id="gLayer4" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#06d6a0" stop-opacity="0.15"/><stop offset="100%" stop-color="#00b4d8" stop-opacity="0.1"/></linearGradient>
+        <linearGradient id="gArrow" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#00b4d8"/><stop offset="100%" stop-color="#7209b7"/></linearGradient>
+        <linearGradient id="gArrow2" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#7209b7"/><stop offset="100%" stop-color="#f72585"/></linearGradient>
+        <linearGradient id="gArrow3" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#f72585"/><stop offset="100%" stop-color="#06d6a0"/></linearGradient>
+        <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="glowLg"><feGaussianBlur stdDeviation="6" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+
+      <!-- Title -->
+      <rect x="150" y="8" width="700" height="42" rx="8" fill="rgba(0,180,216,0.08)" stroke="rgba(0,180,216,0.2)"/>
+      <text x="500" y="35" text-anchor="middle" fill="#90e0ef" font-size="15" font-weight="700">QTrade + QMT 自动化量化交易系统 · 四层架构</text>
+
+      <!-- LAYER 1: Data -->
+      <rect x="20" y="70" width="960" height="170" rx="12" fill="url(#gLayer1)" stroke="rgba(0,180,216,0.25)"/>
+      <rect x="20" y="70" width="180" height="32" rx="8" fill="rgba(0,180,216,0.2)"/>
+      <text x="110" y="91" text-anchor="middle" fill="#90e0ef" font-size="12" font-weight="700">第一层：数据层</text>
+
+      <rect x="36" y="114" width="200" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(0,180,216,0.2)"/>
+      <text x="46" y="136" fill="#c8d6e5" font-size="11" font-weight="600">📈 日线行情</text><text x="46" y="154" fill="#64748b" font-size="10">开盘/高/低/收/量/额</text>
+      <rect x="250" y="114" width="200" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(0,180,216,0.2)"/>
+      <text x="260" y="136" fill="#c8d6e5" font-size="11" font-weight="600">📊 基本面</text><text x="260" y="154" fill="#64748b" font-size="10">PE / PB / PS</text>
+      <rect x="464" y="114" width="200" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(0,180,216,0.2)"/>
+      <text x="474" y="136" fill="#c8d6e5" font-size="11" font-weight="600">📐 财务指标 + 复权</text><text x="474" y="154" fill="#64748b" font-size="10">ROE / ROE_YoY / adj_factor</text>
+      <rect x="678" y="114" width="286" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(0,180,216,0.2)"/>
+      <text x="688" y="136" fill="#c8d6e5" font-size="11" font-weight="600">☁️ 数据源</text><text x="688" y="154" fill="#64748b" font-size="10">AKShare / Tushare / 腾讯财经 API</text>
+
+      <rect x="36" y="176" width="928" height="52" rx="8" fill="rgba(6,214,160,0.06)" stroke="rgba(6,214,160,0.15)"/>
+      <text x="46" y="198" fill="#06d6a0" font-size="11" font-weight="600">🗄️ SQLite 持久化 (data/stock_data.db) — WAL 模式 · 增量UPSERT · 秒级同步</text>
+      <text x="46" y="216" fill="#64748b" font-size="10">daily_price | daily_basic | fina_indicator | adj_factor | trade_signals | portfolio_snapshots</text>
+
+      <!-- Arrow 1→2 -->
+      <line x1="500" y1="242" x2="500" y2="262" stroke="url(#gArrow)" stroke-width="2" marker-end="url(#arrowCyan)"/>
+      <defs><marker id="arrowCyan" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#00b4d8"/></marker></defs>
+
+      <!-- LAYER 2: Strategy -->
+      <rect x="20" y="266" width="960" height="230" rx="12" fill="url(#gLayer2)" stroke="rgba(114,9,183,0.25)"/>
+      <rect x="20" y="266" width="220" height="32" rx="8" fill="rgba(114,9,183,0.2)"/>
+      <text x="130" y="287" text-anchor="middle" fill="#c77dff" font-size="12" font-weight="700">第二层：策略 &amp; 回测 &amp; 信号</text>
+
+      <rect x="36" y="310" width="180" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(114,9,183,0.2)"/>
+      <text x="46" y="332" fill="#c8d6e5" font-size="11" font-weight="600">🧬 因子计算</text><text x="46" y="350" fill="#64748b" font-size="10">18+ 因子 · 插件式架构</text>
+      <rect x="228" y="310" width="180" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(114,9,183,0.2)"/>
+      <text x="238" y="332" fill="#c8d6e5" font-size="11" font-weight="600">🧹 数据清洗</text><text x="238" y="350" fill="#64748b" font-size="10">缺失值 / 极端值 / ST / 新股</text>
+      <rect x="420" y="310" width="180" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(114,9,183,0.2)"/>
+      <text x="430" y="332" fill="#c8d6e5" font-size="11" font-weight="600">⚖️ 综合评分</text><text x="430" y="350" fill="#64748b" font-size="10">Z-score 标准化 + 加权排名</text>
+      <rect x="612" y="310" width="180" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(114,9,183,0.2)"/>
+      <text x="622" y="332" fill="#c8d6e5" font-size="11" font-weight="600">📈 IC 分析</text><text x="622" y="350" fill="#64748b" font-size="10">IC均值 / ICIR / 胜率评估</text>
+      <rect x="804" y="310" width="160" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(114,9,183,0.2)"/>
+      <text x="814" y="332" fill="#c8d6e5" font-size="11" font-weight="600">🎯 方案管理</text><text x="814" y="350" fill="#64748b" font-size="10">schemes.yaml</text>
+
+      <rect x="36" y="374" width="350" height="52" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(114,9,183,0.2)"/>
+      <text x="46" y="396" fill="#c8d6e5" font-size="11" font-weight="600">⏮️ 回测引擎</text><text x="46" y="414" fill="#64748b" font-size="10">T+1执行 · 成本模型 · 风控 (止损/止盈/回撤/冷冻期) · 仓位管理</text>
+
+      <rect x="400" y="374" width="564" height="52" rx="8" fill="rgba(247,37,133,0.06)" stroke="rgba(247,37,133,0.2)"/>
+      <text x="410" y="396" fill="#ff6b9d" font-size="11" font-weight="600">📡 SignalGenerator 信号生成器</text>
+      <text x="410" y="414" fill="#64748b" font-size="10">调仓日 Top N 选股 → Diff 当前持仓 → BUY/SELL 信号 → WS 广播 · 外部信号: Agent / 手动 / 其他程序</text>
+
+      <rect x="36" y="438" width="928" height="44" rx="8" fill="rgba(114,9,183,0.04)" stroke="rgba(114,9,183,0.1)"/>
+      <text x="46" y="459" fill="#c77dff" font-size="10" font-weight="600">预设 9 方案: default · conservative · v1_zz1000 · momentum · 动量增强版0610 · 多因子精选版0623 · 精简反转版0708 · 精简自适应版0708 · 流动性增强版0709</text>
+      <text x="46" y="474" fill="#64748b" font-size="9">自适应权重: 滚动窗口 (60日) IC 均值动态调整因子权重 · 行业中性约束可选 · 等权/评分加权/风险平价</text>
+
+      <!-- Arrow 2→3 -->
+      <line x1="500" y1="498" x2="500" y2="518" stroke="url(#gArrow2)" stroke-width="2" marker-end="url(#arrowPurple)"/>
+      <defs><marker id="arrowPurple" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7209b7"/></marker></defs>
+
+      <!-- LAYER 3: API Server -->
+      <rect x="20" y="522" width="960" height="150" rx="12" fill="url(#gLayer3)" stroke="rgba(247,37,133,0.25)"/>
+      <rect x="20" y="522" width="240" height="32" rx="8" fill="rgba(247,37,133,0.2)"/>
+      <text x="140" y="543" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="700">第三层：交易信号中转 (Mac)</text>
+
+      <rect x="36" y="566" width="440" height="92" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(247,37,133,0.2)"/>
+      <text x="50" y="588" fill="#c8d6e5" font-size="11" font-weight="600">🚀 FastAPI REST Server (Port 8000)</text>
+      <text x="50" y="607" fill="#64748b" font-size="10">GET /api/health · GET /api/trade/pending</text>
+      <text x="50" y="624" fill="#64748b" font-size="10">POST /api/trade/signals · PUT /api/trade/{id}/status</text>
+      <text x="50" y="641" fill="#64748b" font-size="10">DELETE · POST /api/portfolio/sync · GET /api/portfolio/actual</text>
+
+      <rect x="492" y="566" width="472" height="92" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(247,37,133,0.2)"/>
+      <text x="506" y="588" fill="#c8d6e5" font-size="11" font-weight="600">🔌 WebSocket · 实时推送</text>
+      <text x="506" y="607" fill="#64748b" font-size="10">WS /ws/live · 实时信号推送 · 心跳 30s</text>
+      <text x="506" y="624" fill="#64748b" font-size="10">Bearer Token 鉴权</text>
+      <text x="506" y="641" fill="#64748b" font-size="10">状态回传: HTTP PUT 回传 filled/partial/rejected</text>
+
+      <!-- Arrow 3→4 -->
+      <line x1="500" y1="674" x2="500" y2="694" stroke="url(#gArrow3)" stroke-width="2" marker-end="url(#arrowPink)"/>
+      <defs><marker id="arrowPink" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#06d6a0"/></marker></defs>
+
+      <!-- LAYER 4: Execution -->
+      <rect x="20" y="698" width="960" height="180" rx="12" fill="url(#gLayer4)" stroke="rgba(6,214,160,0.25)"/>
+      <rect x="20" y="698" width="240" height="32" rx="8" fill="rgba(6,214,160,0.2)"/>
+      <text x="140" y="719" text-anchor="middle" fill="#06d6a0" font-size="12" font-weight="700">第四层：QMT 执行层 (Windows)</text>
+
+      <rect x="36" y="742" width="290" height="60" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(6,214,160,0.2)"/>
+      <text x="46" y="765" fill="#c8d6e5" font-size="11" font-weight="600">🔗 大QMT 桥接策略</text>
+      <text x="46" y="783" fill="#64748b" font-size="10">qtrade_bridge.py · run_time 定时轮询 (60s) · passorder()</text>
+
+      <rect x="340" y="742" width="624" height="60" rx="8" fill="rgba(15,23,42,0.7)" stroke="rgba(6,214,160,0.2)"/>
+      <text x="350" y="765" fill="#c8d6e5" font-size="11" font-weight="600">⚡ miniQMT 执行器 (建设中)</text>
+      <text x="350" y="783" fill="#64748b" font-size="10">qmt_executor.py · WebSocket 长连接 · xtquant.xttrader · 断线重连 (指数退避) · MISS 信号补抓</text>
+
+      <rect x="36" y="814" width="928" height="52" rx="8" fill="rgba(6,214,160,0.04)" stroke="rgba(6,214,160,0.1)"/>
+      <text x="46" y="836" fill="#06d6a0" font-size="10" font-weight="600">状态回传: HTTP PUT 回传 filled/partial/rejected · 异常处理: 断线重连 + 指数退避 + MISS信号补抓</text>
+      <text x="46" y="854" fill="#64748b" font-size="9">下单参数: 23买入/24卖出 · orderType=1101 · prType=5市价/11限价 · quickTrade=2 · 局域网 (192.168.50.229:8000 ↔ 192.168.50.171)</text>
+
+    </svg>
+  </div>
+</div>
+
+<hr>
+
+<!-- ===== PART 1: Architecture Layers ===== -->
+<div class="section">
+  <div class="section-title"><span class="num">1</span> 架构分层</div>
+
+  <!-- Layer 1 -->
+  <div class="sub-title" id="layer1">第一层：数据层</div>
+
+  <div class="card">
+    <h3><span class="icon">☁️</span> 数据源</h3>
+    <table class="table-wrap" style="border:none; margin:0;">
+      <thead><tr><th>数据源</th><th>角色</th><th>获取内容</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Tushare Pro</strong></td><td>主数据源</td><td>日线行情 (daily)、日线基本面 (daily_basic)、财务指标 (fina_indicator)、复权因子 (adj_factor)</td><td>需 Token，按日期全市场批量拉取</td></tr>
+        <tr><td><strong>AKShare</strong></td><td>备选数据源</td><td>历史行情数据</td><td>免费，有频率限制，按股票逐个获取</td></tr>
+        <tr><td><strong>腾讯财经 API</strong></td><td>实时报价</td><td>即时价格 (qt.gtimg.cn)</td><td>心跳任务中的实时价格查询</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">🗄️</span> 数据存储</h3>
+    <ul>
+      <li><strong>SQLite</strong> 数据库 (<code>data/stock_data.db</code>)，WAL 模式</li>
+      <li>表：<code>daily_price</code> (日线 OHLCVA)、<code>daily_basic</code> (PE/PB/PS)、<code>fina_indicator</code> (ROE)、<code>adj_factor</code> (复权因子)</li>
+      <li>策略：<code>INSERT OR REPLACE</code> UPSERT，新增增量写入，已有自动覆盖，秒级完成同步</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">🧹</span> 数据清洗</h3>
+    <ul>
+      <li>连续缺失值处理（连续缺失 &gt;5 天 → 剔除）</li>
+      <li>极端价格变化过滤（单日涨跌 &gt;20% → 标记）</li>
+      <li>ST 股票 / 退市股票 / 北交所股票过滤</li>
+      <li>新股过滤（上市不足 6 个月排除）</li>
+      <li>最低交易天数要求（≥240 天）</li>
+    </ul>
+  </div>
+
+  <!-- Layer 2 -->
+  <div class="sub-title" id="layer2">第二层：策略计算 + 回测 + 交易信号生成</div>
+
+  <div class="card">
+    <h3><span class="icon">🧬</span> 因子计算 (18+ 因子)</h3>
+    <div class="factor-grid">
+      <div class="factor-item"><span class="factor-dot" style="background:#00b4d8"></span><span class="factor-name">momentum_20d</span><span class="factor-file">momentum.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#00b4d8"></span><span class="factor-name">return_20d</span><span class="factor-file">return_20d.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#00b4d8"></span><span class="factor-name">trend_60d</span><span class="factor-file">trend_60d.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#7209b7"></span><span class="factor-name">rsi_14d</span><span class="factor-file">rsi.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#7209b7"></span><span class="factor-name">volatility_20d</span><span class="factor-file">volatility.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#f72585"></span><span class="factor-name">short_reversal</span><span class="factor-file">short_reversal.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#f72585"></span><span class="factor-name">intraday_range_10d</span><span class="factor-file">intraday_range.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#06d6a0"></span><span class="factor-name">pb_rank</span><span class="factor-file">valuation.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#06d6a0"></span><span class="factor-name">pe_ttm_rank</span><span class="factor-file">valuation.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#06d6a0"></span><span class="factor-name">roe_yoy_rank</span><span class="factor-file">roe_change.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#00b4d8"></span><span class="factor-name">turnover_momentum_10d</span><span class="factor-file">turnover.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#7209b7"></span><span class="factor-name">vol_ratio</span><span class="factor-file">volume_price.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#7209b7"></span><span class="factor-name">ma_deviation_20d</span><span class="factor-file">ma_deviation.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#f72585"></span><span class="factor-name">amihud_20d</span><span class="factor-file">liquidity.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#f72585"></span><span class="factor-name">dollar_volume_20d</span><span class="factor-file">liquidity.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#06d6a0"></span><span class="factor-name">candlestick</span><span class="factor-file">candlestick.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#06d6a0"></span><span class="factor-name">downside_risk</span><span class="factor-file">downside_risk.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#00b4d8"></span><span class="factor-name">market_relative</span><span class="factor-file">market_relative.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#7209b7"></span><span class="factor-name">profitability</span><span class="factor-file">profitability.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#f72585"></span><span class="factor-name">return_distribution</span><span class="factor-file">return_distribution.py</span></div>
+      <div class="factor-item"><span class="factor-dot" style="background:#06d6a0"></span><span class="factor-name">valuation_extended</span><span class="factor-file">valuation_extended.py</span></div>
+    </div>
+    <p style="color:#64748b;font-size:0.82rem;margin-top:12px">所有因子继承 <code>BaseFactor</code> 基类，通过 <code>@register_factor</code> 装饰器自动注册，在 <code>schemes.yaml</code> 中自由组合。</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">⚖️</span> 综合评分流程</h3>
+    <ol>
+      <li><strong>标准化</strong>：对每个因子的原始值做截面 Z-score 标准化</li>
+      <li><strong>加权评分</strong>：<code>total_score = Σ (factor_zscore × weight)</code></li>
+      <li><strong>Top N 选股</strong>：按总分排名选取前 N 只，支持行业中性约束</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">🎯</span> 预设方案 (schemes.yaml)</h3>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>方案</th><th>风格</th><th>核心因子</th><th>权重特点</th></tr></thead>
+      <tbody>
+        <tr><td><code>default</code></td><td>基准</td><td>振幅+PB+PE+趋势+波动</td><td>估值为主 (-45%)</td></tr>
+        <tr><td><code>conservative</code></td><td>低估值稳健</td><td>PB+PE+趋势+波动+换手</td><td>估值为主 (-55%)</td></tr>
+        <tr><td><code>v1_zz1000</code></td><td>中证1000价值</td><td>PE+振幅+波动+ROE改善</td><td>ROE改善 (+30%) 主导</td></tr>
+        <tr><td><code>momentum</code></td><td>动量反转</td><td>动量+量比+RSI+波动+20日收益</td><td>RSI反转 (-25%) + 动量 (+30%)</td></tr>
+        <tr><td><code>动量增强版0610</code></td><td>均衡动量</td><td>ROE+动量+趋势+PE+振幅+波动</td><td>ROE (+25%) 锚，多因子分散</td></tr>
+        <tr><td><code>多因子精选版0623</code></td><td>多因子精选</td><td>6因子，行业中性</td><td>ROE (+25%) 锚，动量反转 (-15%)</td></tr>
+        <tr><td><code>精简反转版0708</code></td><td>反转型</td><td>ROE+RSI+20日收益</td><td>20日收益 (-50%) 反转主导</td></tr>
+        <tr><td><code>精简自适应版0708</code></td><td>自适应</td><td>ROE+RSI+20日收益</td><td>IC 滚动自适应权重</td></tr>
+        <tr><td><code>流动性增强版0709</code></td><td>流动性聚焦</td><td>ROE+Amihud+量比+成交额</td><td>ROE (+55%) 绝对锚定 + 流动性溢价</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">📈</span> IC 分析与自适应权重</h3>
+    <ul>
+      <li><strong>IC 分析</strong> (<code>ic_analyzer.py</code>)：滚动计算各因子的 IC 均值、ICIR、胜率，评估因子预测有效性</li>
+      <li><strong>自适应权重</strong> (<code>adaptive_weights.py</code>)：基于滚动窗口 (默认 60 日) IC 均值，动态调整下期因子权重 → IC 为负的因子降权</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">⏮️</span> 回测引擎</h3>
+    <ul>
+      <li><strong>信号生成</strong>：每月/周/季调仓日，按 Top N 选股</li>
+      <li><strong>T+1 执行</strong>：信号日收盘出信号，次交易日开盘价成交，避免前视偏差</li>
+      <li><strong>成本模型</strong>：买入佣金 0.03% / 卖出佣金 0.03% / 印花税 0.1%</li>
+      <li><strong>风控模块</strong>：个股止损/止盈、组合最大回撤止损、止损后冷冻期</li>
+      <li><strong>仓位管理</strong>：等权 / 评分加权 / 风险平价</li>
+      <li><strong>绩效指标</strong>：年化收益、夏普比率、最大回撤、Calmar比率、胜率、盈亏比、月度/年度收益分布</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">📡</span> 信号生成器 (SignalGenerator)</h3>
+    <p style="color:#94a3b8;margin-bottom:12px">实盘信号生成流程：</p>
+    <ol>
+      <li>加载最新日线数据 + 基本面数据 + 财务指标</li>
+      <li>运行完整因子计算管道</li>
+      <li>按方案权重评分 → Top N 选股</li>
+      <li><strong>Diff 对比</strong>：新选股 vs 当前目标持仓快照</li>
+      <li>信号写入 <code>trade_signals</code> 表 (status = <code>pending</code>)</li>
+      <li><strong>WebSocket 广播</strong>：实时推送给连接的 Windows QMT 客户端</li>
+      <li>保存新的目标持仓快照</li>
+    </ol>
+  </div>
+
+  <!-- Layer 3 -->
+  <div class="sub-title" id="layer3">第三层：交易信号中转 (Live API Server)</div>
+
+  <div class="card">
+    <h3><span class="icon"><span class="live-dot"></span>Live API Server</span></h3>
+    <p style="color:#64748b;margin-bottom:12px"><strong>运行位置</strong>：Mac 主机 (本机 <code>192.168.50.229</code>) · <strong>技术栈</strong>：FastAPI + uvicorn + Bearer Token 鉴权</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>功能</th><th>端点</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>健康检查</td><td><code>GET /api/health</code></td><td>返回服务状态 + 待处理信号数</td></tr>
+        <tr><td>获取待执行信号</td><td><code>GET /api/trade/pending</code></td><td>QMT 客户端轮询取信号</td></tr>
+        <tr><td>信号 CRUD</td><td><code>GET/POST/PUT/DELETE /api/trade/signals</code></td><td>完整信号管理</td></tr>
+        <tr><td>状态更新</td><td><code>PUT /api/trade/{id}/status</code></td><td>带状态机校验</td></tr>
+        <tr><td>持仓同步</td><td><code>POST /api/portfolio/sync</code></td><td>接收 QMT 端实际持仓</td></tr>
+        <tr><td>查询持仓</td><td><code>GET /api/portfolio/actual</code></td><td>查询最近同步的实际持仓</td></tr>
+        <tr><td>WebSocket</td><td><code>WS /ws/live</code></td><td>实时信号推送 + 心跳 (30s)</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">🔁</span> 信号状态机</h3>
+    <div class="arch-diagram" style="padding:20px">
+      <svg viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrowSM" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#475569"/></marker>
+        </defs>
+        <!-- pending -->
+        <rect x="80" y="10" width="120" height="44" rx="10" fill="rgba(0,180,216,0.12)" stroke="rgba(0,180,216,0.3)"/>
+        <text x="140" y="37" text-anchor="middle" fill="#90e0ef" font-size="14" font-weight="700">pending</text>
+        <text x="140" y="70" text-anchor="middle" fill="#64748b" font-size="10">初始状态</text>
+        <!-- sent -->
+        <rect x="260" y="10" width="100" height="44" rx="10" fill="rgba(114,9,183,0.12)" stroke="rgba(114,9,183,0.3)"/>
+        <text x="310" y="37" text-anchor="middle" fill="#c77dff" font-size="14" font-weight="700">sent</text>
+        <!-- cancelled -->
+        <rect x="60" y="130" width="110" height="44" rx="10" fill="rgba(247,37,133,0.08)" stroke="rgba(247,37,133,0.2)"/>
+        <text x="115" y="157" text-anchor="middle" fill="#ff6b9d" font-size="13" font-weight="700">cancelled</text>
+        <!-- rejected top -->
+        <rect x="310" y="130" width="110" height="44" rx="10" fill="rgba(247,37,133,0.08)" stroke="rgba(247,37,133,0.2)"/>
+        <text x="365" y="157" text-anchor="middle" fill="#ff6b9d" font-size="13" font-weight="700">rejected</text>
+        <!-- filled -->
+        <rect x="430" y="10" width="100" height="44" rx="10" fill="rgba(6,214,160,0.12)" stroke="rgba(6,214,160,0.3)"/>
+        <text x="480" y="37" text-anchor="middle" fill="#06d6a0" font-size="13" font-weight="700">filled</text>
+        <!-- partial -->
+        <rect x="430" y="130" width="100" height="44" rx="10" fill="rgba(6,214,160,0.08)" stroke="rgba(6,214,160,0.2)"/>
+        <text x="480" y="157" text-anchor="middle" fill="#06d6a0" font-size="13" font-weight="700">partial</text>
+
+        <!-- arrows -->
+        <line x1="200" y1="32" x2="255" y2="32" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowSM)"/>
+        <line x1="140" y1="54" x2="115" y2="126" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowSM)"/>
+        <line x1="175" y1="54" x2="365" y2="126" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowSM)"/>
+        <line x1="360" y1="32" x2="425" y2="32" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowSM)"/>
+        <line x1="340" y1="44" x2="450" y2="130" stroke="#475569" stroke-width="1.5" marker-end="url(#arrowSM)"/>
+
+        <text x="490" y="102" fill="#06d6a0" font-size="9" font-weight="600">终端状态</text>
+        <line x1="480" y1="108" x2="480" y2="126" stroke="#06d6a0" stroke-width="1" stroke-dasharray="3"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Layer 4 -->
+  <div class="sub-title" id="layer4">第四层：QMT 执行层</div>
+
+  <p style="color:#64748b;margin-bottom:16px">运行在 Windows 机器上 (<code>192.168.50.171</code>)，负责实际下单执行。</p>
+
+  <div class="card">
+    <h3><span class="icon">🔗</span> 大QMT 桥接策略 (qtrade_bridge.py)</h3>
+    <ul>
+      <li><strong>运行方式</strong>：作为 QMT 策略在策略管理器加载，选"实盘"或"模拟"运行</li>
+      <li><strong>通信方式</strong>：HTTP 轮询 (默认 60 秒)</li>
+      <li><strong>工作流程</strong>：<code>init()</code> 注册 <code>run_time</code> 定时器 → 每 60s 调用 <code>GET /api/trade/pending</code> → 有信号时 <code>passorder()</code> 下单 → <code>PUT</code> 回传状态</li>
+      <li><strong>价格类型</strong>：支持市价 (prType=5) 和限价 (prType=11)</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">⚡</span> miniQMT 执行器 (建设中) (qmt_executor.py)</h3>
+    <ul>
+      <li><strong>运行方式</strong>：命令行 <code>python qmt_executor.py</code>，在 miniQMT 同目录启动</li>
+      <li><strong>通信方式</strong>：WebSocket 长连接 + HTTP 回退</li>
+      <li><strong>底层库</strong>：<code>xtquant</code> (xttrader 下单)</li>
+      <li>实时推送，延迟更低 · 断线自动重连 (指数退避，最大 60s) · 重连后 HTTP 补抓 MISS 信号 · 无 xtquant 时自动 Dry-Run</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">📋</span> 下单参数映射</h3>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>信号字段</th><th>passorder 参数</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>action=BUY</td><td>opType=23</td><td>买入</td></tr>
+        <tr><td>action=SELL</td><td>opType=24</td><td>卖出</td></tr>
+        <tr><td>—</td><td>orderType=1101</td><td>按股数下单</td></tr>
+        <tr><td>price_type=MKT</td><td>prType=5, price=-1</td><td>最新价 (市价)</td></tr>
+        <tr><td>price_type=LIMIT</td><td>prType=11, price=limit_price</td><td>限价</td></tr>
+        <tr><td>—</td><td>quickTrade=2</td><td>立即交易</td></tr>
+        <tr><td>quantity</td><td>volume</td><td>股数</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+<hr>
+
+<!-- ===== NETWORK TOPOLOGY ===== -->
+<div class="section">
+  <div class="section-title"><span class="num">🌐</span> 网络拓扑</div>
+
+  <div class="arch-diagram">
+    <svg viewBox="0 0 1000 340" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="glowNet"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <linearGradient id="gLan" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#00b4d8" stop-opacity="0.1"/><stop offset="100%" stop-color="#7209b7" stop-opacity="0.1"/></linearGradient>
+      </defs>
+
+      <!-- LAN box -->
+      <rect x="10" y="10" width="980" height="220" rx="14" fill="url(#gLan)" stroke="rgba(0,180,216,0.2)"/>
+      <text x="30" y="36" fill="#90e0ef" font-size="13" font-weight="700">局域网 192.168.50.0/24</text>
+
+      <!-- Mac -->
+      <rect x="30" y="52" width="440" height="165" rx="12" fill="rgba(15,23,42,0.7)" stroke="rgba(0,180,216,0.25)"/>
+      <text x="50" y="82" fill="#00b4d8" font-size="14" font-weight="700">🖥️ Mac — 192.168.50.229</text>
+
+      <rect x="50" y="98" width="180" height="56" rx="8" fill="rgba(0,180,216,0.06)" stroke="rgba(0,180,216,0.15)"/>
+      <text x="60" y="120" fill="#c8d6e5" font-size="11" font-weight="600">Live API Server</text>
+      <text x="60" y="138" fill="#64748b" font-size="10">Port 8000 (FastAPI + uvicorn)</text>
+
+      <rect x="248" y="98" width="200" height="56" rx="8" fill="rgba(114,9,183,0.06)" stroke="rgba(114,9,183,0.15)"/>
+      <text x="258" y="120" fill="#c8d6e5" font-size="11" font-weight="600">SignalGenerator</text>
+      <text x="258" y="138" fill="#64748b" font-size="10">定时/手动触发信号生成</text>
+
+      <rect x="50" y="165" width="398" height="42" rx="8" fill="rgba(15,23,42,0.5)" stroke="rgba(0,180,216,0.08)"/>
+      <text x="60" y="190" fill="#64748b" font-size="10">因子计算 · 综合评分 · 回测引擎 · 风控 · 仓位管理</text>
+
+      <!-- Windows -->
+      <rect x="530" y="52" width="440" height="165" rx="12" fill="rgba(15,23,42,0.7)" stroke="rgba(6,214,160,0.25)"/>
+      <text x="550" y="82" fill="#06d6a0" font-size="14" font-weight="700">🪟 Windows — 192.168.50.171</text>
+
+      <rect x="550" y="98" width="195" height="56" rx="8" fill="rgba(6,214,160,0.06)" stroke="rgba(6,214,160,0.15)"/>
+      <text x="560" y="120" fill="#c8d6e5" font-size="11" font-weight="600">大QMT 桥接</text>
+      <text x="560" y="138" fill="#64748b" font-size="10">qtrade_bridge.py · HTTP轮询</text>
+
+      <rect x="758" y="98" width="195" height="56" rx="8" fill="rgba(6,214,160,0.06)" stroke="rgba(6,214,160,0.15)"/>
+      <text x="768" y="120" fill="#c8d6e5" font-size="11" font-weight="600">miniQMT 执行器 (建设中)</text>
+      <text x="768" y="138" fill="#64748b" font-size="10">qmt_executor.py · WS长连接</text>
+
+      <rect x="550" y="165" width="403" height="42" rx="8" fill="rgba(15,23,42,0.5)" stroke="rgba(6,214,160,0.08)"/>
+      <text x="560" y="183" fill="#64748b" font-size="10">passorder() 下单 · 状态回传 · 断线重连</text>
+
+      <!-- Connections -->
+      <line x1="230" y1="124" x2="545" y2="124" stroke="#00b4d8" stroke-width="1.5" stroke-dasharray="6,3" filter="url(#glowNet)"/>
+      <text x="388" y="118" text-anchor="middle" fill="#00b4d8" font-size="9" font-weight="600">HTTP 轮询 / WS 推送</text>
+
+      <!-- External -->
+      <rect x="10" y="248" width="980" height="80" rx="12" fill="rgba(15,23,42,0.4)" stroke="rgba(0,180,216,0.08)"/>
+      <text x="30" y="272" fill="#64748b" font-size="12" font-weight="600">外网 (可选)</text>
+      <text x="30" y="294" fill="#64748b" font-size="10">📈 qt.gtimg.cn 实时报价</text>
+      <text x="280" y="294" fill="#64748b" font-size="10">📡 Tushare API 历史数据</text>
+    </svg>
+  </div>
+</div>
+
+<hr>
+
+<!-- ===== STARTUP FLOW ===== -->
+<div class="section">
+  <div class="section-title"><span class="num">🚀</span> 系统启动流程</div>
+
+  <div class="card">
+    <h3><span class="icon">1️⃣</span> 启动 Mac 端 API 服务</h3>
+    <pre><code>cd scripts/QTrade
+nohup python3 -m uvicorn src.live.server:app --host 0.0.0.0 --port 8000 > /tmp/qtrade-server.log 2>&1 &</code></pre>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">2️⃣</span> 生成交易信号</h3>
+    <pre><code># 方式一：程序化生成 (Python)
+python3 -c "
+from src.live.signal_generator import SignalGenerator
+gen = SignalGenerator(scheme_name='精简自适应版0708', top_n=10)
+signals = gen.generate_signals('20260715')
+"
+
+# 方式二：REST API 手动创建
+curl -X POST http://localhost:8000/api/trade/signals \
+  -H 'Authorization: Bearer Trader88888888' \
+  -H 'Content-Type: application/json' \
+  -d '{"ts_code":"600036.SH","action":"BUY","quantity":1000,"rebalance_date":"20260715"}'</code></pre>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">3️⃣</span> Windows 端启动 QMT 执行</h3>
+    <p><strong>大QMT 方式</strong>：QMT 策略管理器 → 加载策略 → 选择"模拟"或"实盘" → 运行</p>
+    <p style="margin-top:8px"><strong>miniQMT 方式</strong>：</p>
+    <pre><code>python qmt_executor.py --config config_windows.json</code></pre>
+  </div>
+</div>
+
+<hr>
+
+<!-- ===== CONFIG ===== -->
+<div class="section">
+  <div class="section-title"><span class="num">⚙️</span> 配置关键参数</div>
+
+  <div class="card">
+    <h3><span class="icon">📄</span> config.ini — [live] 段</h3>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>说明</th><th>默认值</th></tr></thead>
+      <tbody>
+        <tr><td><code>api_port</code></td><td>API 服务监听端口</td><td>8000</td></tr>
+        <tr><td><code>api_key</code></td><td>Bearer Token 鉴权密钥</td><td>自定义随机字符串</td></tr>
+        <tr><td><code>rebalance_schedule</code></td><td>调仓频率: monthly / biweekly</td><td>monthly</td></tr>
+        <tr><td><code>scheme_name</code></td><td>使用的方案名称 (对应 schemes.yaml)</td><td>default</td></tr>
+        <tr><td><code>top_n</code></td><td>持仓数量</td><td>10</td></tr>
+        <tr><td><code>total_capital</code></td><td>总资金 (用于仓位计算)</td><td>1,000,000</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><span class="icon">🪟</span> config_windows.json (Windows 端)</h3>
+    <pre><code>{
+    "mac_host": "http://192.168.50.229:8000",
+    "api_key": "Trader88888888"
+}</code></pre>
+    <p style="color:#64748b;font-size:0.82rem;margin-top:8px">⚠️ 两边 <code>api_key</code> 必须一致，Mac 端 IP 按实际局域网地址配置。</p>
+  </div>
+</div>
+
+<!-- ===== FOOTER ===== -->
+<div class="footer">
+  <p>QTrade + QMT 自动化量化交易系统 · Architecture Document · Generated 2026-07-15</p>
+</div>
+
+</div><!-- .container -->
+
+<!-- ===== TOOLBAR ===== -->
+<div class="toolbar" id="toolbar">
+  <button class="btn-edit" id="btnEdit" onclick="toggleEdit()" title="快捷键: Ctrl+E">
+    <span id="btnEditIcon">✏️</span> <span id="btnEditLabel">编辑</span>
+  </button>
+  <button class="btn-save" id="btnSave" onclick="saveDocument()" disabled title="保存到原文件 (Ctrl+S)">
+    💾 <span>保存</span>
+  </button>
+  <button class="btn-export" id="btnExport" onclick="exportDocument()" title="下载为 HTML 文件">
+    📥 <span>导出</span>
+  </button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let isEditing = false;
+
+/* ---- Edit mode: single contenteditable wrapper (avoids nested-editable bugs) ---- */
+function enterEditMode() {
+  const container = document.querySelector('.container');
+  if (!container) return;
+  // Make the main content wrapper editable
+  container.setAttribute('contenteditable', 'true');
+  // Hero section is also editable
+  const hero = document.querySelector('.hero');
+  if (hero) hero.setAttribute('contenteditable', 'true');
+
+  // Carve out non-editable islands inside the editable wrapper
+  document.querySelectorAll('.arch-diagram, .badge-row, .factor-dot, .live-dot, .num, .icon').forEach(el => {
+    el.setAttribute('contenteditable', 'false');
+  });
+
+  // Bind SVG text double-click editor
+  document.querySelectorAll('.arch-diagram svg').forEach(svg => {
+    svg.addEventListener('dblclick', onSvgTextDblClick);
+  });
+
+  document.body.classList.add('editing');
+}
+
+function exitEditMode() {
+  removeSvgEditor();
+
+  // Remove contenteditable from everything
+  document.querySelectorAll('[contenteditable]').forEach(el => {
+    el.removeAttribute('contenteditable');
+  });
+
+  // Unbind SVG editors
+  document.querySelectorAll('.arch-diagram svg').forEach(svg => {
+    svg.removeEventListener('dblclick', onSvgTextDblClick);
+  });
+
+  document.body.classList.remove('editing');
+}
+
+/* ---- SVG inline text editor ---- */
+let svgEditor = null;
+
+function onSvgTextDblClick(e) {
+  const textEl = e.target.closest('text');
+  if (!textEl || !isEditing) return;
+  e.preventDefault(); e.stopPropagation();
+
+  removeSvgEditor();
+
+  const textRect = textEl.getBoundingClientRect();
+
+  // Use textarea so multi-line SVG text works naturally
+  const ta = document.createElement('textarea');
+  ta.className = 'svg-inline-editor';
+  ta.value = textEl.textContent;
+  ta.style.left = (textRect.left - 4) + 'px';
+  ta.style.top  = (textRect.top - 4) + 'px';
+  ta.style.width  = Math.max(textRect.width + 24, 140) + 'px';
+  ta.style.height = Math.max(textRect.height + 12, 28) + 'px';
+  ta.style.resize = 'both';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+
+  svgEditor = { ta, textEl };
+
+  const commit = () => {
+    if (!svgEditor) return;
+    const newText = svgEditor.ta.value;          // keep leading/trailing spaces
+    // Always apply — even empty string clears the SVG text
+    while (svgEditor.textEl.firstChild) svgEditor.textEl.firstChild.remove();
+    svgEditor.textEl.appendChild(document.createTextNode(newText || ''));
+    removeSvgEditor();
+  };
+
+  ta.addEventListener('keydown', (ke) => {
+    // Enter without Shift → commit; Shift+Enter → newline
+    if (ke.key === 'Enter' && !ke.shiftKey) {
+      ke.preventDefault();
+      commit();
+    }
+    if (ke.key === 'Escape') {
+      ke.preventDefault();
+      removeSvgEditor();
+    }
+    // Backspace / Delete are left alone → native textarea behaviour
+  });
+
+  // Commit on blur so clicking away saves the edit
+  ta.addEventListener('blur', () => {
+    // Small delay so click-outside logic doesn't race
+    setTimeout(() => {
+      if (svgEditor && svgEditor.ta === ta) commit();
+    }, 100);
+  });
+}
+
+function removeSvgEditor() {
+  if (svgEditor) {
+    svgEditor.ta.remove();
+    svgEditor = null;
+  }
+}
+
+/* ---- Toggle ---- */
+function toggleEdit() {
+  isEditing = !isEditing;
+  const btnSave = document.getElementById('btnSave');
+  const icon  = document.getElementById('btnEditIcon');
+  const label = document.getElementById('btnEditLabel');
+
+  if (isEditing) {
+    enterEditMode();
+    icon.textContent  = '👁️';
+    label.textContent = '预览';
+    btnSave.disabled  = false;
+    showToast('编辑模式 — 点击文字直接修改 · 双击 SVG 文字可编辑架构图 · Ctrl+S 保存', 'info');
+  } else {
+    exitEditMode();
+    icon.textContent  = '✏️';
+    label.textContent = '编辑';
+    btnSave.disabled  = true;
+    showToast('已切换到预览模式', 'info');
+  }
+}
+
+/* ---- Save ---- */
+async function saveDocument() {
+  if (!isEditing) return;
+  removeSvgEditor();
+
+  // Clone the document and strip editing artifacts
+  const clone = document.documentElement.cloneNode(true);
+  clone.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+  clone.querySelectorAll('.svg-inline-editor').forEach(el => el.remove());
+  clone.classList.remove('editing');
+  const tb = clone.querySelector('#toolbar'); if (tb) tb.remove();
+  const ts = clone.querySelector('#toast');   if (ts) ts.remove();
+
+  const html = '<!DOCTYPE html>\n' + clone.outerHTML;
+
+  // 1) Try File System Access API (direct overwrite)
+  if ('showSaveFilePicker' in window) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: 'QTRADE_ARCHITECTURE.html',
+        types: [{ description: 'HTML', accept: { 'text/html': ['.html'] } }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(html);
+      await writable.close();
+      showToast('✅ 文件已保存', 'success');
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+
+  // 2) Fallback: download
+  downloadFile(html, 'QTRADE_ARCHITECTURE.html');
+  showToast('✅ 已下载 (浏览器不支持直接覆盖)', 'success');
+}
+
+/* ---- Export (always downloads a clean copy) ---- */
+function exportDocument() {
+  removeSvgEditor();
+  const wasEditing = isEditing;
+  if (wasEditing) exitEditMode();
+
+  const clone = document.documentElement.cloneNode(true);
+  clone.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+  clone.querySelectorAll('.svg-inline-editor').forEach(el => el.remove());
+  clone.classList.remove('editing');
+  const tb = clone.querySelector('#toolbar'); if (tb) tb.remove();
+  const ts = clone.querySelector('#toast');   if (ts) ts.remove();
+
+  downloadFile('<!DOCTYPE html>\n' + clone.outerHTML, 'QTRADE_ARCHITECTURE.html');
+
+  if (wasEditing) enterEditMode();
+  showToast('📥 文件已导出下载', 'success');
+}
+
+function downloadFile(content, filename) {
+  const blob = new Blob([content], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function showToast(msg, type) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.className = 'toast ' + (type || 'info') + ' show';
+  clearTimeout(toast._timeout);
+  toast._timeout = setTimeout(() => { toast.classList.remove('show'); }, 2800);
+}
+
+/* ---- Keyboard shortcuts ---- */
+document.addEventListener('keydown', (e) => {
+  // Only fire when NOT inside an editable element (contenteditable, input, textarea)
+  const tag = document.activeElement ? document.activeElement.tagName : '';
+  const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement.isContentEditable;
+
+  if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
+    e.preventDefault();
+    toggleEdit();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if (isEditing) saveDocument();
+  }
+});
+
+/* ---- Click-outside closes SVG editor ---- */
+document.addEventListener('click', (e) => {
+  if (svgEditor && !e.target.closest('.svg-inline-editor') && !e.target.closest('text')) {
+    removeSvgEditor();
+  }
+});
+window.addEventListener('scroll', () => { removeSvgEditor(); }, { passive: true });
+</script>
+
+</body>
+</html>

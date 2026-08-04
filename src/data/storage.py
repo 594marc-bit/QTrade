@@ -93,27 +93,29 @@ def load_daily_price(
     """
     conn = get_connection()
 
-    try:
-        df = pd.read_sql("SELECT * FROM daily_price", conn)
-    except Exception:
-        conn.close()
-        return pd.DataFrame()
-
-    conn.close()
-
-    if df.empty:
-        return df
-
-    # Apply filters
-    if ts_codes:
-        df = df[df["ts_code"].isin(ts_codes)]
+    # Push filters into SQL to avoid loading unnecessary data
+    wheres: list[str] = []
+    params: list[str] = []
     if start_date:
-        df = df[df["trade_date"] >= start_date]
+        wheres.append("trade_date >= ?")
+        params.append(start_date)
     if end_date:
-        df = df[df["trade_date"] <= end_date]
+        wheres.append("trade_date <= ?")
+        params.append(end_date)
+    if ts_codes:
+        placeholders = ",".join(["?"] * len(ts_codes))
+        wheres.append(f"ts_code IN ({placeholders})")
+        params.extend(ts_codes)
 
-    # Sort
-    df = df.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+    where_clause = (" WHERE " + " AND ".join(wheres)) if wheres else ""
+    sql = f"SELECT * FROM daily_price{where_clause} ORDER BY trade_date, ts_code"
+
+    try:
+        df = pd.read_sql(sql, conn, params=params if params else None)
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
 
     return df
 
@@ -173,6 +175,153 @@ def get_latest_date_per_stock(ts_codes: list[str] | None = None) -> dict[str, st
     except Exception:
         conn.close()
         return {}
+
+
+# ============================================================
+#  Minute 5m K-line table — local cache of Windows kline_5m
+# ============================================================
+
+_MINUTE_COLS = ["bar_time", "ts_code", "open", "high", "low", "close", "vol", "amount", "is_trading"]
+
+
+def _ensure_minute_5m_table(conn: sqlite3.Connection):
+    """Ensure minute_5m table exists with UNIQUE constraint on (bar_time, ts_code)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS minute_5m (
+            bar_time TEXT NOT NULL,
+            ts_code TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            vol REAL,
+            amount REAL,
+            is_trading REAL
+        )
+    """)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_minute_5m_unique "
+            "ON minute_5m (bar_time, ts_code)"
+        )
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+
+
+def save_minute_kline(df: pd.DataFrame) -> int:
+    """Save minute 5m K-line data using INSERT OR REPLACE (UPSERT).
+
+    Args:
+        df: DataFrame with columns matching minute_5m schema.
+
+    Returns:
+        Number of rows saved.
+    """
+    if df.empty:
+        return 0
+    conn = get_connection()
+    _ensure_minute_5m_table(conn)
+    cols = [c for c in _MINUTE_COLS if c in df.columns]
+    placeholders = ", ".join(["?"] * len(cols))
+    sql = f"INSERT OR REPLACE INTO minute_5m ({', '.join(cols)}) VALUES ({placeholders})"
+    rows = df[cols].values.tolist()
+    conn.executemany(sql, rows)
+    conn.commit()
+    conn.close()
+    return len(rows)
+
+
+def load_minute_kline(ts_code: str, trade_date: str) -> pd.DataFrame:
+    """Load 5-minute K-line bars for one stock on one trading day.
+
+    Args:
+        ts_code: e.g. '000001.SZ'
+        trade_date: YYYYMMDD
+
+    Returns:
+        DataFrame with columns matching minute_5m, sorted by bar_time.
+    """
+    conn = get_connection()
+    try:
+        df = pd.read_sql(
+            "SELECT * FROM minute_5m WHERE ts_code = ? AND bar_time >= ? AND bar_time <= ? "
+            "ORDER BY bar_time",
+            conn,
+            params=(ts_code, trade_date + "000000", trade_date + "235959"),
+        )
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
+
+
+def load_minute_range(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """Load 5-minute bars for a stock over a date range.
+
+    Args:
+        ts_code: e.g. '000001.SZ'
+        start_date / end_date: YYYYMMDD
+
+    Returns:
+        DataFrame sorted by bar_time.
+    """
+    conn = get_connection()
+    try:
+        df = pd.read_sql(
+            "SELECT * FROM minute_5m WHERE ts_code = ? "
+            "AND bar_time >= ? AND bar_time <= ? ORDER BY bar_time",
+            conn,
+            params=(ts_code, start_date + "000000", end_date + "235959"),
+        )
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
+
+
+def load_minute_daily(trade_date: str) -> pd.DataFrame:
+    """Load ALL stocks' 5-minute bars for one trading day.
+
+    Args:
+        trade_date: YYYYMMDD
+
+    Returns:
+        DataFrame sorted by ts_code, bar_time.
+    """
+    conn = get_connection()
+    try:
+        df = pd.read_sql(
+            "SELECT * FROM minute_5m WHERE bar_time >= ? AND bar_time <= ? "
+            "ORDER BY ts_code, bar_time",
+            conn,
+            params=(trade_date + "000000", trade_date + "235959"),
+        )
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
+
+
+def get_latest_minute_date() -> str | None:
+    """Get the latest trade date in minute_5m."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT SUBSTR(MAX(bar_time), 1, 8) FROM minute_5m"
+        ).fetchone()
+    except Exception:
+        row = [None]
+    finally:
+        conn.close()
+    return row[0] if row else None
 
 
 def _ensure_daily_basic_table(conn: sqlite3.Connection):
@@ -535,6 +684,334 @@ def merge_fina_indicator(price_df: pd.DataFrame, fina_df: pd.DataFrame) -> pd.Da
     return merged
 
 
+# ============================================================
+#  Trade Signals table — live trading signal persistence
+# ============================================================
+
+VALID_STATUS_TRANSITIONS = {
+    "pending": ["sent", "cancelled", "rejected"],
+    "sent": ["filled", "partial", "rejected"],
+    "partial": ["filled", "rejected"],
+    "filled": [],
+    "rejected": [],
+    "cancelled": [],
+}
+
+
+def _ensure_trade_signals_table(conn: sqlite3.Connection):
+    """Ensure trade_signals table exists with all fields and status CHECK constraint."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trade_signals (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_code         TEXT NOT NULL,
+            action          TEXT NOT NULL CHECK(action IN ('BUY', 'SELL')),
+            quantity        INTEGER NOT NULL,
+            price_type      TEXT DEFAULT 'MKT' CHECK(price_type IN ('MKT', 'LIMIT')),
+            limit_price     REAL,
+            scheme_name     TEXT,
+            rebalance_date  TEXT NOT NULL,
+            status          TEXT DEFAULT 'pending'
+                            CHECK(status IN ('pending','sent','filled','partial','rejected','cancelled')),
+            broker_order_id TEXT,
+            filled_qty      INTEGER DEFAULT 0,
+            avg_price       REAL,
+            error_msg       TEXT,
+            created_at      TEXT DEFAULT (datetime('now','localtime')),
+            sent_at         TEXT,
+            filled_at       TEXT
+        )
+    """)
+    conn.commit()
+
+
+def save_trade_signals(df: pd.DataFrame) -> int:
+    """Save trade signals to SQLite.
+
+    Args:
+        df: DataFrame with columns matching trade_signals table.
+
+    Returns:
+        Number of rows saved.
+    """
+    if df.empty:
+        return 0
+
+    conn = get_connection()
+    _ensure_trade_signals_table(conn)
+
+    db_cols = ["ts_code", "action", "quantity", "price_type", "limit_price",
+               "scheme_name", "rebalance_date", "cancel_signal_id"]
+    available = [c for c in db_cols if c in df.columns]
+    placeholders = ", ".join(["?"] * len(available))
+    col_names = ", ".join(available)
+
+    sql = f"INSERT INTO trade_signals ({col_names}) VALUES ({placeholders})"
+
+    rows = df[available].values.tolist()
+    conn.executemany(sql, rows)
+    conn.commit()
+    conn.close()
+
+    return len(rows)
+
+
+def load_trade_signals(status: str | None = None) -> pd.DataFrame:
+    """Load trade signals, optionally filtered by status.
+
+    Args:
+        status: Filter by signal status (e.g. 'pending', 'sent'), or None for all.
+
+    Returns:
+        DataFrame of trade signals.
+    """
+    conn = get_connection()
+    _ensure_trade_signals_table(conn)
+
+    try:
+        if status:
+            df = pd.read_sql(
+                "SELECT * FROM trade_signals WHERE status = ? ORDER BY created_at ASC",
+                conn,
+                params=(status,),
+            )
+        else:
+            df = pd.read_sql(
+                "SELECT * FROM trade_signals ORDER BY created_at DESC", conn
+            )
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+
+    conn.close()
+    return df
+
+
+def update_signal_status(signal_id: int, status: str, **kwargs) -> bool:
+    """Update the status of a trade signal with transition validation.
+
+    Args:
+        signal_id: The signal ID to update.
+        status: New status value.
+        **kwargs: Additional fields to update (broker_order_id, filled_qty,
+                  avg_price, error_msg).
+
+    Returns:
+        True if update succeeded, False if transition is invalid or signal not found.
+    """
+    conn = get_connection()
+    _ensure_trade_signals_table(conn)
+
+    # Read current status
+    cur = conn.execute(
+        "SELECT status FROM trade_signals WHERE id = ?", (signal_id,)
+    ).fetchone()
+
+    if cur is None:
+        conn.close()
+        return False
+
+    current_status = cur[0]
+
+    # Validate transition
+    allowed = VALID_STATUS_TRANSITIONS.get(current_status, [])
+    if status not in allowed:
+        conn.close()
+        return False
+
+    # Build UPDATE statement from kwargs
+    set_parts = ["status = ?"]
+    params = [status]
+
+    if status == "sent":
+        set_parts.append("sent_at = datetime('now','localtime')")
+    elif status in ("filled", "partial"):
+        set_parts.append("filled_at = datetime('now','localtime')")
+
+    for key in ("broker_order_id", "filled_qty", "avg_price", "error_msg"):
+        if key in kwargs:
+            set_parts.append(f"{key} = ?")
+            params.append(kwargs[key])
+
+    params.append(signal_id)
+
+    sql = f"UPDATE trade_signals SET {', '.join(set_parts)} WHERE id = ?"
+    conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+    return True
+
+
+def get_signal(signal_id: int) -> dict | None:
+    """Get a single trade signal by ID.
+
+    Args:
+        signal_id: The signal ID to fetch.
+
+    Returns:
+        Signal dict if found, None otherwise.
+    """
+    conn = get_connection()
+    _ensure_trade_signals_table(conn)
+
+    cursor = conn.execute(
+        "SELECT * FROM trade_signals WHERE id = ?", (signal_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    cols = [desc[0] for desc in cursor.description]
+    return dict(zip(cols, row))
+
+
+def update_signal_fields(signal_id: int, **kwargs) -> bool:
+    """Update arbitrary fields on a trade signal (no status-transition validation).
+
+    For admin CRUD use. Does NOT enforce the pending→sent→filled state machine.
+    Use update_signal_status() for workflow-driven status changes.
+
+    Args:
+        signal_id: The signal ID to update.
+        **kwargs: Field=value pairs to set.
+
+    Returns:
+        True if updated, False if signal not found or no fields provided.
+    """
+    if not kwargs:
+        return False
+
+    conn = get_connection()
+    _ensure_trade_signals_table(conn)
+
+    cur = conn.execute(
+        "SELECT id FROM trade_signals WHERE id = ?", (signal_id,)
+    ).fetchone()
+    if cur is None:
+        conn.close()
+        return False
+
+    set_parts = []
+    params = []
+    for key, value in kwargs.items():
+        set_parts.append(f"{key} = ?")
+        params.append(value)
+
+    params.append(signal_id)
+    sql = f"UPDATE trade_signals SET {', '.join(set_parts)} WHERE id = ?"
+    conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_signal(signal_id: int) -> bool:
+    """Delete a trade signal by ID.
+
+    Args:
+        signal_id: The signal ID to delete.
+
+    Returns:
+        True if deleted, False if not found.
+    """
+    conn = get_connection()
+    _ensure_trade_signals_table(conn)
+
+    cur = conn.execute(
+        "DELETE FROM trade_signals WHERE id = ?", (signal_id,)
+    )
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+
+    return deleted
+
+
+# ============================================================
+#  Portfolio Snapshots table — target holdings after rebalance
+# ============================================================
+
+
+def _ensure_portfolio_snapshots_table(conn: sqlite3.Connection):
+    """Ensure portfolio_snapshots table exists."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            rebalance_date  TEXT NOT NULL,
+            ts_code         TEXT NOT NULL,
+            target_weight   REAL,
+            target_shares   INTEGER,
+            score           REAL,
+            created_at      TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
+    conn.commit()
+
+
+def save_portfolio_snapshot(df: pd.DataFrame) -> int:
+    """Save a portfolio snapshot after rebalance.
+
+    Args:
+        df: DataFrame with columns [rebalance_date, ts_code, target_weight,
+            target_shares, score].
+
+    Returns:
+        Number of rows saved.
+    """
+    if df.empty:
+        return 0
+
+    conn = get_connection()
+    _ensure_portfolio_snapshots_table(conn)
+
+    cols = ["rebalance_date", "ts_code", "target_weight", "target_shares", "score"]
+    available = [c for c in cols if c in df.columns]
+    placeholders = ", ".join(["?"] * len(available))
+    col_names = ", ".join(available)
+
+    sql = f"INSERT INTO portfolio_snapshots ({col_names}) VALUES ({placeholders})"
+
+    rows = df[available].values.tolist()
+    conn.executemany(sql, rows)
+    conn.commit()
+    conn.close()
+
+    return len(rows)
+
+
+def load_latest_snapshot() -> pd.DataFrame:
+    """Load the most recent portfolio snapshot.
+
+    Returns:
+        DataFrame with the latest rebalance_date's holdings, or empty if none.
+    """
+    conn = get_connection()
+    _ensure_portfolio_snapshots_table(conn)
+
+    try:
+        latest_date = conn.execute(
+            "SELECT MAX(rebalance_date) FROM portfolio_snapshots"
+        ).fetchone()[0]
+
+        if latest_date is None:
+            conn.close()
+            return pd.DataFrame()
+
+        df = pd.read_sql(
+            "SELECT * FROM portfolio_snapshots WHERE rebalance_date = ?",
+            conn,
+            params=(latest_date,),
+        )
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+
+    conn.close()
+    return df
+
+
 def export_csv(
     ts_codes: list[str] | None = None,
     start_date: str | None = None,
@@ -560,3 +1037,193 @@ def export_csv(
     filepath = DATA_DIR / filename
     df.to_csv(filepath, index=False)
     return str(filepath)
+
+
+# ============================================================
+# Grid state table — persists grid trading live state
+# ============================================================
+
+def _ensure_grid_state_table(conn: sqlite3.Connection):
+    """Ensure grid_state table exists for live grid trading state."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS grid_state (
+            ts_code TEXT NOT NULL,
+            grid_level INTEGER NOT NULL,
+            grid_price REAL NOT NULL,
+            direction TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'idle',
+            signal_id INTEGER,
+            filled_shares INTEGER DEFAULT 0,
+            filled_price REAL,
+            last_trigger_price REAL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(ts_code, grid_level, direction)
+        )
+    """)
+    conn.commit()
+
+
+def save_grid_state(rows: list[dict]) -> int:
+    """Save or update grid state rows.
+
+    Args:
+        rows: List of dicts with keys [ts_code, grid_level, grid_price,
+              direction, status, signal_id, filled_shares, filled_price,
+              last_trigger_price].
+
+    Returns:
+        Number of rows saved.
+    """
+    if not rows:
+        return 0
+    conn = get_connection()
+    _ensure_grid_state_table(conn)
+    cols = ["ts_code", "grid_level", "grid_price", "direction", "status",
+            "signal_id", "filled_shares", "filled_price", "last_trigger_price"]
+    sql = f"""INSERT OR REPLACE INTO grid_state
+        ({', '.join(cols)})
+        VALUES ({', '.join(['?'] * len(cols))})"""
+    conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in rows])
+    conn.commit()
+    conn.close()
+    return len(rows)
+
+
+def load_grid_state(ts_code: str | None = None) -> pd.DataFrame:
+    """Load grid state from database.
+
+    Args:
+        ts_code: Optional filter by stock code.
+
+    Returns:
+        DataFrame with grid state rows.
+    """
+    conn = get_connection()
+    _ensure_grid_state_table(conn)
+    try:
+        if ts_code:
+            df = pd.read_sql(
+                "SELECT * FROM grid_state WHERE ts_code = ? ORDER BY ts_code, grid_level, direction",
+                conn, params=(ts_code,),
+            )
+        else:
+            df = pd.read_sql(
+                "SELECT * FROM grid_state ORDER BY ts_code, grid_level, direction",
+                conn,
+            )
+    except (sqlite3.OperationalError, pd.errors.DatabaseError):
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+
+def clear_grid_state(ts_code: str | None = None) -> int:
+    """Clear grid state rows. If ts_code is None, clears all.
+
+    Returns:
+        Number of rows deleted.
+    """
+    conn = get_connection()
+    _ensure_grid_state_table(conn)
+    cursor = conn.cursor()
+    if ts_code:
+        cursor.execute("DELETE FROM grid_state WHERE ts_code = ?", (ts_code,))
+    else:
+        cursor.execute("DELETE FROM grid_state")
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+#  Backtest Jobs table — persist backtest results for history
+# ============================================================
+
+def _ensure_backtest_jobs_table(conn: sqlite3.Connection):
+    """Ensure backtest_jobs table exists."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            scheme_name TEXT,
+            config_json TEXT,
+            metrics_json TEXT,
+            result_dir TEXT
+        )
+    """)
+    conn.commit()
+
+
+def save_backtest_job(scheme_name: str, config_json: str, metrics_json: str, result_dir: str) -> int:
+    """Save a completed backtest job record. Returns the new row id."""
+    conn = get_connection()
+    _ensure_backtest_jobs_table(conn)
+    conn.execute(
+        "INSERT INTO backtest_jobs (scheme_name, config_json, metrics_json, result_dir) "
+        "VALUES (?, ?, ?, ?)",
+        (scheme_name, config_json, metrics_json, result_dir),
+    )
+    conn.commit()
+    row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.close()
+    return row_id
+
+
+def list_backtest_jobs() -> list[dict]:
+    """Return all backtest jobs, newest first."""
+    conn = get_connection()
+    _ensure_backtest_jobs_table(conn)
+    try:
+        rows = conn.execute(
+            "SELECT id, created_at, scheme_name, metrics_json, result_dir "
+            "FROM backtest_jobs ORDER BY id DESC"
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "created_at": r[1],
+                "scheme_name": r[2],
+                "metrics": r[3],
+                "result_dir": r[4],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def get_backtest_job(job_id: int) -> dict | None:
+    """Return a single backtest job by id, or None."""
+    conn = get_connection()
+    _ensure_backtest_jobs_table(conn)
+    try:
+        row = conn.execute(
+            "SELECT id, created_at, scheme_name, config_json, metrics_json, result_dir "
+            "FROM backtest_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "created_at": row[1],
+            "scheme_name": row[2],
+            "config": row[3],
+            "metrics": row[4],
+            "result_dir": row[5],
+        }
+    finally:
+        conn.close()
+
+
+def delete_backtest_job(job_id: int) -> bool:
+    """Delete a backtest job record. Returns True if deleted, False if not found."""
+    conn = get_connection()
+    _ensure_backtest_jobs_table(conn)
+    cur = conn.execute("DELETE FROM backtest_jobs WHERE id = ?", (job_id,))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+    return deleted

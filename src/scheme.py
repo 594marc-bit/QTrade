@@ -157,6 +157,16 @@ def _validate_factors(factors: set[str]) -> tuple[set[str], set[str]]:
     import src.factors.return_20d
     import src.factors.trend_60d
     import src.factors.roe_change
+    import src.factors.downside_risk
+    import src.factors.return_distribution
+    import src.factors.market_relative
+    import src.factors.liquidity
+    import src.factors.short_reversal
+    import src.factors.candlestick
+    import src.factors.valuation_extended
+    import src.factors.profitability
+    import src.factors.volume_price
+    import src.factors.minute_factors
 
     from src.factors.base import get_registered_factors
 
@@ -200,3 +210,22 @@ def save_scheme(
         "weights": weights,
     }
     _write_yaml(data)
+
+
+def delete_scheme(name: str) -> bool:
+    """Delete a scheme from schemes.yaml.
+
+    Args:
+        name: Scheme name.
+
+    Returns:
+        True if deleted, False if scheme didn't exist.
+    """
+    data = _read_yaml()
+    schemes = data.get("schemes", {})
+    if name not in schemes:
+        return False
+    del schemes[name]
+    data["schemes"] = schemes
+    _write_yaml(data)
+    return True

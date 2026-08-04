@@ -85,16 +85,6 @@ schemes:
       pe_ttm_rank_score: -0.15
       pb_rank_score: -0.1
       turnover_momentum_score: 0.1
-  精简反转版0708:
-    description: 精简反转版（权重优化：ROE:Return:RSI = 1:2:1，全周期最优）
-    factors:
-    - roe_yoy_rank
-    - rsi_14d
-    - return_20d
-    weights:
-      roe_yoy_rank_score: 0.25
-      rsi_score: -0.25
-      return_score: -0.50
   精简自适应版0708:
     description: 精简自适应版（3因子+滚动IC自适应权重，中证1000）
     factors:
@@ -102,6 +92,52 @@ schemes:
     - rsi_14d
     - return_20d
     weights:
-      roe_yoy_rank_score: 0.50
+      roe_yoy_rank_score: 0.5
       rsi_score: -0.25
       return_score: -0.25
+  流动性增强版0709:
+    description: 流动性增强版（4因子最优组合，ROE锚+流动性溢价+缩量反转，中证1000）
+    factors:
+    - roe_yoy_rank
+    - amihud_20d
+    - vol_ratio
+    - dollar_volume_20d
+    weights:
+      roe_yoy_rank_score: 0.55
+      amihud_score: 0.2
+      vol_score: -0.15
+      dollar_volume_score: -0.1
+  分钟级因子测试版0723:
+    description: 分钟级因子实验版（ROE锚+3个日内微观结构因子，50股30天IC验证）
+    factors:
+    - roe_yoy_rank
+    - intraday_reversal_5m
+    - open_effect_5m
+    - vwap_deviation_5m
+    weights:
+      roe_yoy_rank_score: 0.35
+      intraday_reversal_5m_score: 0.30
+      open_effect_5m_score: 0.20
+      vwap_deviation_5m_score: 0.15
+  15分钟交易版0802:
+    description: 15分钟级别交易（日频质量+活跃度过滤75% + 分钟级微观择时25%，中证1000）
+    factors:
+    - roe_yoy_rank
+    - trend_60d
+    - dollar_volume_20d
+    - amihud_20d
+    - vol_ratio
+    - volatility_20d
+    - intraday_reversal_5m
+    - vwap_deviation_5m
+    - volume_concentration_5m
+    weights:
+      roe_yoy_rank_score: 0.10
+      trend_60d_score: 0.15
+      dollar_volume_20d_score: 0.20
+      amihud_20d_score: -0.15
+      vol_ratio_score: 0.10
+      volatility_20d_score: 0.05
+      intraday_reversal_5m_score: 0.10
+      vwap_deviation_5m_score: 0.10
+      volume_concentration_5m_score: 0.05

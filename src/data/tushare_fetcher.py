@@ -457,16 +457,19 @@ def fetch_daily_basic(
     ts_codes: list[str],
     start_date: str = START_DATE,
     end_date: str = END_DATE,
+    trade_dates: list[str] | None = None,
 ) -> pd.DataFrame:
     """Fetch daily basic indicators (PE_TTM, PB, PS_TTM) via Tushare daily_basic.
 
     Fetches by trade_date (all stocks in one call per date).
-    CSI 300 stocks fit within the 6000-row limit.
 
     Args:
         ts_codes: List of stock codes to filter.
         start_date: Start date YYYYMMDD.
         end_date: End date YYYYMMDD.
+        trade_dates: Optional explicit list of trade dates to fetch.
+            When provided, skips the calendar lookup (avoids one API call).
+            When None, fetches all trading days in the range.
 
     Returns:
         DataFrame with columns: trade_date, ts_code, pe_ttm, pb, ps_ttm.
@@ -476,19 +479,22 @@ def fetch_daily_basic(
     pro = _get_pro()
     code_set = set(ts_codes)
 
-    # Get trading calendar
-    try:
-        cal = pro.trade_cal(
-            exchange="SSE",
-            start_date=start_date,
-            end_date=end_date,
-            fields="cal_date",
-        )
-        if cal is None or cal.empty:
+    # Get trading calendar (or use explicit dates)
+    if trade_dates is not None:
+        pass  # caller provides the date list
+    else:
+        try:
+            cal = pro.trade_cal(
+                exchange="SSE",
+                start_date=start_date,
+                end_date=end_date,
+                fields="cal_date",
+            )
+            if cal is None or cal.empty:
+                return pd.DataFrame()
+            trade_dates = sorted(cal["cal_date"].tolist())
+        except Exception:
             return pd.DataFrame()
-        trade_dates = sorted(cal["cal_date"].tolist())
-    except Exception:
-        return pd.DataFrame()
 
     all_dfs = []
     for date in trade_dates:
@@ -522,6 +528,8 @@ def fetch_fina_indicator(
 ) -> pd.DataFrame:
     """Fetch fina_indicator (ROE, ROE YoY) from Tushare for given stocks.
 
+    Rate limit: 200 calls/min. Sleeps 0.35s between calls (~170/min).
+
     Args:
         ts_codes: List of stock codes.
         start_date: Start date YYYYMMDD (end_date filter on reports).
@@ -547,8 +555,8 @@ def fetch_fina_indicator(
         except Exception:
             pass
 
-        if (i + 1) % 50 == 0 and i < len(ts_codes) - 1:
-            time.sleep(TUSHARE_FETCH_INTERVAL)
+        # Rate limit: sleep after every call (~120 calls/min, safe under 200/min cap)
+        time.sleep(0.5)
 
     if not all_dfs:
         return pd.DataFrame()

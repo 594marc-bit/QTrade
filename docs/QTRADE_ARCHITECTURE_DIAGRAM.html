@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QTrade + QMT — 系统架构图</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: #060b14;
+    color: #c8d6e5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh; padding: 40px 20px;
+  }
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(ellipse at 15% 20%, rgba(0,180,216,0.07) 0%, transparent 50%),
+      radial-gradient(ellipse at 85% 50%, rgba(114,9,183,0.06) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 85%, rgba(247,37,133,0.05) 0%, transparent 50%);
+  }
+  .grid {
+    position:fixed; inset:0; pointer-events:none; z-index:0;
+    background-image:
+      linear-gradient(rgba(0,180,216,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,180,216,0.04) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+
+  .diagram { position:relative; z-index:1; width:100%; max-width:960px; }
+
+  /* ---- Title ---- */
+  .title {
+    text-align:center; margin-bottom:36px;
+  }
+  .title h1 {
+    font-size:2rem; font-weight:800;
+    background: linear-gradient(135deg, #00b4d8 0%, #90e0ef 35%, #c77dff 65%, #f72585 100%);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+  }
+  .title p { color:#475569; font-size:0.9rem; letter-spacing:0.1em; margin-top:4px; }
+
+  /* ---- Layer ---- */
+  .layer {
+    border-radius:16px; padding:0; margin-bottom:0; position:relative;
+    overflow:hidden;
+  }
+  .layer-header {
+    display:flex; align-items:center; gap:12px;
+    padding:14px 24px;
+    font-weight:700; font-size:0.95rem;
+  }
+  .layer-num {
+    width:28px; height:28px; border-radius:8px; display:flex;
+    align-items:center; justify-content:center;
+    font-size:0.85rem; font-weight:800; color:#fff; flex-shrink:0;
+  }
+  .layer-body {
+    display:flex; flex-wrap:wrap; gap:10px; padding:0 20px 18px;
+  }
+  .module {
+    flex:1 1 160px; min-width:150px;
+    background:rgba(2,8,18,0.7); border-radius:10px;
+    padding:14px 16px;
+    border:1px solid transparent;
+    transition: border-color 0.3s, transform 0.2s;
+  }
+  .module:hover { transform:translateY(-2px); }
+  .module .name { font-size:0.9rem; font-weight:700; margin-bottom:4px; }
+  .module .desc { font-size:0.75rem; line-height:1.5; }
+
+  .bar {
+    margin:0 20px 16px; padding:8px 16px; border-radius:8px;
+    font-size:0.78rem; font-weight:600;
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  }
+
+  /* ---- Colors per layer ---- */
+  .L1 { background:rgba(0,180,216,0.06); border:1px solid rgba(0,180,216,0.18); }
+  .L1 .layer-header { color:#90e0ef; }
+  .L1 .layer-num { background:linear-gradient(135deg,#0077b6,#00b4d8); }
+  .L1 .module { border-color:rgba(0,180,216,0.15); }
+  .L1 .module:hover { border-color:rgba(0,180,216,0.35); }
+  .L1 .module .name { color:#90e0ef; }
+  .L1 .bar { background:rgba(0,180,216,0.08); color:#90e0ef; }
+
+  .L2 { background:rgba(114,9,183,0.05); border:1px solid rgba(114,9,183,0.18); }
+  .L2 .layer-header { color:#c77dff; }
+  .L2 .layer-num { background:linear-gradient(135deg,#5a189a,#7209b7); }
+  .L2 .module { border-color:rgba(114,9,183,0.15); }
+  .L2 .module:hover { border-color:rgba(114,9,183,0.35); }
+  .L2 .module .name { color:#c77dff; }
+  .L2 .bar { background:rgba(114,9,183,0.08); color:#c77dff; }
+
+  .L3 { background:rgba(247,37,133,0.05); border:1px solid rgba(247,37,133,0.18); }
+  .L3 .layer-header { color:#ff6b9d; }
+  .L3 .layer-num { background:linear-gradient(135deg,#b5179e,#f72585); }
+  .L3 .module { border-color:rgba(247,37,133,0.15); }
+  .L3 .module:hover { border-color:rgba(247,37,133,0.35); }
+  .L3 .module .name { color:#ff6b9d; }
+  .L3 .bar { background:rgba(247,37,133,0.08); color:#ff6b9d; }
+
+  .L4 { background:rgba(6,214,160,0.05); border:1px solid rgba(6,214,160,0.18); }
+  .L4 .layer-header { color:#06d6a0; }
+  .L4 .layer-num { background:linear-gradient(135deg,#047857,#06d6a0); }
+  .L4 .module { border-color:rgba(6,214,160,0.15); }
+  .L4 .module:hover { border-color:rgba(6,214,160,0.35); }
+  .L4 .module .name { color:#06d6a0; }
+  .L4 .bar { background:rgba(6,214,160,0.08); color:#06d6a0; }
+
+  /* ---- Arrows between layers ---- */
+  .arrow {
+    display:flex; align-items:center; justify-content:center;
+    height:36px; position:relative; z-index:2;
+  }
+  .arrow svg { display:block; }
+
+  /* ---- Bottom bar ---- */
+  .footer-row {
+    margin-top:20px; padding:16px 24px;
+    border-radius:12px;
+    background:rgba(15,23,42,0.6); border:1px solid rgba(0,180,216,0.1);
+    display:flex; align-items:center; justify-content:center; gap:32px;
+    flex-wrap:wrap; font-size:0.78rem; color:#64748b;
+  }
+  .footer-row span { display:flex; align-items:center; gap:6px; }
+  .dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .dot.cyan { background:#00b4d8; box-shadow:0 0 6px #00b4d8; }
+  .dot.purple { background:#7209b7; box-shadow:0 0 6px #7209b7; }
+  .dot.pink { background:#f72585; box-shadow:0 0 6px #f72585; }
+  .dot.green { background:#06d6a0; box-shadow:0 0 6px #06d6a0; }
+
+  /* ---- Highlight module (SignalGenerator) ---- */
+  .module.highlight { border-style:dashed; }
+  .L2 .module.highlight { border-color:rgba(247,37,133,0.35); background:rgba(247,37,133,0.06); }
+  .L2 .module.highlight .name { color:#ff6b9d; }
+
+  /* ---- Data-flow tags ---- */
+  .tag {
+    display:inline-block; padding:2px 8px; border-radius:4px;
+    font-size:0.7rem; font-weight:600; letter-spacing:0.04em;
+  }
+  .tag.http { background:rgba(0,180,216,0.15); color:#90e0ef; }
+  .tag.ws   { background:rgba(114,9,183,0.15); color:#c77dff; }
+  .tag.poll { background:rgba(6,214,160,0.15); color:#06d6a0; }
+</style>
+</head>
+<body>
+
+<div class="grid"></div>
+
+<div class="diagram">
+
+  <!-- Title -->
+  <div class="title">
+    <h1>QTrade + QMT 量化交易系统架构</h1>
+    <p>数据层 → 策略 &amp; 信号 → 信号中转 → 执行层</p>
+  </div>
+
+  <!-- ===== LAYER 1: Data ===== -->
+  <div class="layer L1">
+    <div class="layer-header">
+      <span class="layer-num">1</span> 数据层
+      <span style="color:#64748b;font-weight:400;font-size:0.78rem;margin-left:auto">AKShare / Tushare / 腾讯财经</span>
+    </div>
+    <div class="layer-body">
+      <div class="module">
+        <div class="name">📈 日线行情</div>
+        <div class="desc">开盘/高/低/收/量/额<br>daily_price 表</div>
+      </div>
+      <div class="module">
+        <div class="name">📊 基本面 + 财务</div>
+        <div class="desc">PE / PB / PS<br>ROE / ROE_YoY</div>
+      </div>
+      <div class="module">
+        <div class="name">📐 复权因子</div>
+        <div class="desc">adj_factor<br>前复权价格计算</div>
+      </div>
+      <div class="module">
+        <div class="name">🧹 数据清洗</div>
+        <div class="desc">去重 · 极端值 · ST 过滤<br>新股过滤 · 缺失处理</div>
+      </div>
+    </div>
+    <div class="bar">
+      🗄️ SQLite (data/stock_data.db) — WAL 模式 · 增量 UPSERT · 秒级同步
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div class="arrow">
+    <svg width="24" height="36"><defs><linearGradient id="a1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00b4d8"/><stop offset="100%" stop-color="#7209b7"/></linearGradient></defs><line x1="12" y1="2" x2="12" y2="28" stroke="url(#a1)" stroke-width="2"/><polygon points="6,28 12,36 18,28" fill="#7209b7"/></svg>
+  </div>
+
+  <!-- ===== LAYER 2: Strategy & Signal ===== -->
+  <div class="layer L2">
+    <div class="layer-header">
+      <span class="layer-num">2</span> 策略计算 &amp; 回测 &amp; 信号生成
+      <span style="color:#64748b;font-weight:400;font-size:0.78rem;margin-left:auto">18+ 因子 · 9 套方案 · IC 自适应权重</span>
+    </div>
+    <div class="layer-body">
+      <div class="module">
+        <div class="name">🧬 因子计算</div>
+        <div class="desc">动量/估值/波动率<br>ROE/流动性/K线形态<br>插件式注册架构</div>
+      </div>
+      <div class="module">
+        <div class="name">⚖️ 综合评分</div>
+        <div class="desc">Z-score 标准化<br>加权排名<br>行业中性（可选）</div>
+      </div>
+      <div class="module">
+        <div class="name">📈 IC 分析</div>
+        <div class="desc">滚动 IC 均值 / ICIR<br>胜率评估<br>自适应权重调整</div>
+      </div>
+      <div class="module">
+        <div class="name">⏮️ 回测引擎</div>
+        <div class="desc">T+1 执行 · 成本模型<br>止损/止盈/回撤<br>等权/评分加权/风险平价</div>
+      </div>
+      <div class="module highlight" style="flex:2 1 240px;">
+        <div class="name">📡 SignalGenerator 信号生成器</div>
+        <div class="desc">调仓日 Top N 选股 → Diff 对比当前持仓 → BUY / SELL 信号<br>外部来源：Agent 手动 / REST API</div>
+      </div>
+    </div>
+    <div class="bar">
+      🎯 预设方案：default · conservative · v1_zz1000 · momentum · 动量增强版 · 多因子精选版 · 精简反转版 · 精简自适应版 · 流动性增强版
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div class="arrow">
+    <svg width="24" height="36"><defs><linearGradient id="a2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#7209b7"/><stop offset="100%" stop-color="#f72585"/></linearGradient></defs><line x1="12" y1="2" x2="12" y2="28" stroke="url(#a2)" stroke-width="2"/><polygon points="6,28 12,36 18,28" fill="#f72585"/></polygon></svg>
+  </div>
+
+  <!-- ===== LAYER 3: Signal Relay ===== -->
+  <div class="layer L3">
+    <div class="layer-header">
+      <span class="layer-num">3</span> 交易信号中转
+      <span style="color:#64748b;font-weight:400;font-size:0.78rem;margin-left:auto">Mac 本机 · 192.168.50.229:8000</span>
+    </div>
+    <div class="layer-body">
+      <div class="module" style="flex:2 1 280px;">
+        <div class="name">🚀 FastAPI REST Server</div>
+        <div class="desc">
+          <span class="tag http">GET</span> /api/health · /api/trade/pending<br>
+          <span class="tag http">POST</span> /api/trade/signals · /api/portfolio/sync<br>
+          <span class="tag http">PUT</span> /api/trade/{id}/status （状态机校验）<br>
+          <span class="tag http">DELETE</span> /api/trade/signals/{id}
+        </div>
+      </div>
+      <div class="module">
+        <div class="name">🔌 WebSocket</div>
+        <div class="desc"><span class="tag ws">WS</span> /ws/live<br>实时信号推送<br>心跳 30s</div>
+      </div>
+      <div class="module">
+        <div class="name">🔁 状态机</div>
+        <div class="desc">pending → sent → filled<br>↘ cancelled / partial<br>↘ rejected</div>
+      </div>
+    </div>
+    <div class="bar">
+      🔐 Bearer Token 鉴权 · SQLite trade_signals 表持久化
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div class="arrow">
+    <svg width="24" height="36"><defs><linearGradient id="a3" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f72585"/><stop offset="100%" stop-color="#06d6a0"/></linearGradient></defs><line x1="12" y1="2" x2="12" y2="28" stroke="url(#a3)" stroke-width="2"/><polygon points="6,28 12,36 18,28" fill="#06d6a0"/></polygon></svg>
+  </div>
+
+  <!-- ===== LAYER 4: Execution ===== -->
+  <div class="layer L4">
+    <div class="layer-header">
+      <span class="layer-num">4</span> QMT 执行层
+      <span style="color:#64748b;font-weight:400;font-size:0.78rem;margin-left:auto">Windows · 192.168.50.171</span>
+    </div>
+    <div class="layer-body">
+      <div class="module" style="flex:2 1 240px;">
+        <div class="name">🔗 大QMT 桥接策略</div>
+        <div class="desc">
+          qtrade_bridge.py · <span class="tag poll">HTTP 轮询 60s</span><br>
+          run_time 定时器 → GET /api/trade/pending<br>
+          passorder() 下单 → PUT 回传状态
+        </div>
+      </div>
+      <div class="module" style="flex:2 1 240px;">
+        <div class="name">⚡ miniQMT 执行器 (建设中)</div>
+        <div class="desc">
+          qmt_executor.py · <span class="tag ws">WebSocket 长连接</span><br>
+          xtquant.xttrader · 断线重连 (指数退避)<br>
+          MISS 信号补抓 · Dry-Run 降级
+        </div>
+      </div>
+    </div>
+    <div class="bar">
+      📋 下单参数：23买入/24卖出 · orderType=1101 · prType=5市价/11限价 · quickTrade=2
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer-row">
+    <span><span class="dot cyan"></span> 数据层</span>
+    <span><span class="dot purple"></span> 策略 &amp; 信号</span>
+    <span><span class="dot pink"></span> 信号中转</span>
+    <span><span class="dot green"></span> 执行层</span>
+    <span style="margin-left:auto;color:#475569;">Qtrade + QMT · 2026.07</span>
+  </div>
+
+</div>
+
+</body>
+</html>

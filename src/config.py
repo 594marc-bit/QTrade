@@ -51,11 +51,26 @@ else:
     except Exception:
         END_DATE = today
 
+def get_end_date() -> str:
+    """Return the current end date for sync operations.
+
+    Unlike the module-level ``END_DATE`` (cached at import time), this is
+    recomputed on every call so long-running servers always use today's date.
+    Falls back to ``END_DATE`` if the config has an explicit override.
+    """
+    if _config_end_date:
+        return END_DATE
+    return date.today().strftime("%Y%m%d")
+
+
 # Index configuration
 INDEX_CODE = "000300"  # 沪深300
 
-# Data source: "akshare" or "tushare"
+# Data source: "akshare", "tushare" or "qmt"
 DATA_SOURCE = _config.get("data", "data_source", fallback="tushare").lower().strip()
+
+# QMT Windows API configuration (data_source = qmt)
+QMT_API_BASE_URL = _config.get("qmt_api", "base_url", fallback="http://127.0.0.1:8001").strip()
 
 # Tushare configuration
 # Priority: .env (TUSHARE_TOKEN) > config.ini [tushare] token
@@ -137,3 +152,22 @@ POSITION_SIZING_MAX_WEIGHT = float(_config.get("position_sizing", "max_weight", 
 # Adaptive weights settings
 ADAPTIVE_WEIGHTS_ENABLED = _config.get("adaptive_weights", "enabled", fallback="false").strip().lower() == "true"
 ADAPTIVE_WEIGHTS_IC_WINDOW = int(_config.get("adaptive_weights", "ic_window", fallback="60"))
+
+# Grid trading settings
+GRID_BAR_PERIOD = _config.get("grid", "bar_period", fallback="5m").strip()
+GRID_PRICE_RANGE_PCT = float(_config.get("grid", "price_range_pct", fallback="15"))
+GRID_LEVELS = int(_config.get("grid", "grid_levels", fallback="10"))
+GRID_MODE = _config.get("grid", "grid_mode", fallback="ratio").strip()
+GRID_ORDER_SHARES = int(_config.get("grid", "order_shares", fallback="1000"))
+GRID_BASE_SHARES = int(_config.get("grid", "base_shares", fallback="0"))
+GRID_BUY_COMMISSION = float(_config.get("grid", "buy_commission", fallback="0.0003"))
+GRID_SELL_COMMISSION = float(_config.get("grid", "sell_commission", fallback="0.0003"))
+GRID_STAMP_TAX = float(_config.get("grid", "stamp_tax", fallback="0.0005"))
+
+# Live trading settings
+LIVE_API_PORT = int(_config.get("live", "api_port", fallback="8000"))
+LIVE_API_KEY = _config.get("live", "api_key", fallback="").strip()
+LIVE_REBALANCE_SCHEDULE = _config.get("live", "rebalance_schedule", fallback="monthly").strip().lower()
+LIVE_SCHEME_NAME = _config.get("live", "scheme_name", fallback="default").strip()
+LIVE_TOP_N = int(_config.get("live", "top_n", fallback="10"))
+LIVE_TOTAL_CAPITAL = float(_config.get("live", "total_capital", fallback="1000000"))

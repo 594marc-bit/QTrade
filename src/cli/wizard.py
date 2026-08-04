@@ -51,6 +51,17 @@ import src.factors.intraday_range
 import src.factors.valuation
 import src.factors.return_20d
 import src.factors.trend_60d
+import src.factors.roe_change
+import src.factors.downside_risk
+import src.factors.return_distribution
+import src.factors.market_relative
+import src.factors.liquidity
+import src.factors.short_reversal
+import src.factors.candlestick
+import src.factors.valuation_extended
+import src.factors.profitability
+import src.factors.volume_price
+import src.factors.minute_factors  # 分钟级日内微观结构因子
 
 console = Console()
 
@@ -77,6 +88,8 @@ class WizardConfig:
         self.index_codes: list[str] = ["000300"]
         self.start_date: str = "20230101"
         self.end_date: str = date.today().strftime("%Y%m%d")
+        self.factor_start_date: str = "20180101"
+        self.factor_end_date: str = date.today().strftime("%Y%m%d")
         self.refresh_data: bool = True
         self.data_source: str = "tushare"
         self.enabled_factors: set[str] = {"intraday_range_10d", "pb_rank", "pe_ttm_rank", "trend_60d", "volatility_20d"}
@@ -97,7 +110,9 @@ class WizardConfig:
         self.max_industry_pct: float = 0.30
         self.backtest_start: str | None = None
         self.backtest_end: str | None = None
+        self.scheme_name: str | None = None
         self.auto_confirm: bool = False
+        self.exclude_etf: bool = True
         self.stock_codes: list[str] = []
 
 
@@ -147,24 +162,45 @@ def step_index(cfg: WizardConfig) -> None:
         cfg.index_codes = ["000300"]
         console.print(f"  [yellow]未选择，使用默认: 沪深300[/yellow]")
 
+    # ETF exclusion
+    if confirm("是否排除ETF（51xxxx.SH / 159xxx.SZ）？", default=True):
+        cfg.exclude_etf = True
+        console.print("  [green]将排除ETF[/green]")
+    else:
+        cfg.exclude_etf = False
+        console.print("  [yellow]将包含ETF[/yellow]")
+
 
 def step_date_range(cfg: WizardConfig) -> None:
-    """Step 2: Select date range."""
-    console.print("\n[bold cyan]配置数据时间范围[/]")
-    raw_start = input_value("起始日期 (YYYYMMDD)", default=cfg.start_date)
-    raw_end = input_value("结束日期 (YYYYMMDD)", default=cfg.end_date)
+    """Step 2: Select factor data range and backtest evaluation range."""
 
-    # Validate format
-    for label, val in [("起始日期", raw_start), ("结束日期", raw_end)]:
+    # ── Factor data range (wider, for warmup) ──
+    console.print("\n[bold cyan]因子数据范围（用于数据加载和因子计算，需要暖机历史）[/]")
+    raw_fs = input_value("因子起始 (YYYYMMDD)", default=cfg.factor_start_date)
+    raw_fe = input_value("因子结束 (YYYYMMDD)", default=cfg.factor_end_date)
+    for label, val in [("因子起始", raw_fs), ("因子结束", raw_fe)]:
         try:
             datetime.strptime(val, "%Y%m%d")
         except ValueError:
             console.print(f"[red]{label} 格式无效，使用默认值[/red]")
             return
+    cfg.factor_start_date = raw_fs
+    cfg.factor_end_date = raw_fe
+    console.print(f"  [green]因子范围: {cfg.factor_start_date} ~ {cfg.factor_end_date}[/green]")
 
+    # ── Backtest evaluation range ──
+    console.print("\n[bold cyan]回测评估范围（绩效评估区间，默认与因子范围相同）[/]")
+    raw_start = input_value("回测起始 (YYYYMMDD)", default=cfg.start_date)
+    raw_end = input_value("回测结束 (YYYYMMDD)", default=cfg.end_date)
+    for label, val in [("回测起始", raw_start), ("回测结束", raw_end)]:
+        try:
+            datetime.strptime(val, "%Y%m%d")
+        except ValueError:
+            console.print(f"[red]{label} 格式无效，使用默认值[/red]")
+            return
     cfg.start_date = raw_start
     cfg.end_date = raw_end
-    console.print(f"  [green]时间范围: {cfg.start_date} ~ {cfg.end_date}[/green]")
+    console.print(f"  [green]回测范围: {cfg.start_date} ~ {cfg.end_date}[/green]")
 
 
 def step_data_refresh(cfg: WizardConfig) -> None:
@@ -217,11 +253,22 @@ def step_data_source(cfg: WizardConfig) -> None:
     """Step 4: Select data source."""
     from src.config import TUSHARE_TOKEN
 
-    options = ["AKShare (免费，无需Token)", "Tushare (需要Token，更稳定)"]
-    default = 1 if cfg.data_source == "akshare" else 2
+    options = [
+        "AKShare (免费，无需Token)",
+        "Tushare (需要Token，更稳定)",
+        "QMT (Windows API，需先启动 qmt_api_server)",
+    ]
+    if cfg.data_source == "akshare":
+        default = 1
+    elif cfg.data_source == "qmt":
+        default = 3
+    else:
+        default = 2
     choice = select("选择数据源", options, default=default)
 
-    if choice == 2:
+    if choice == 3:
+        cfg.data_source = "qmt"
+    elif choice == 2:
         if not TUSHARE_TOKEN:
             console.print("  [red]未检测到 Tushare Token！[/red]")
             console.print("  [dim]请在 .env 文件中配置 TUSHARE_TOKEN[/dim]")
@@ -273,6 +320,7 @@ def step_scheme_selection(cfg: WizardConfig) -> bool:
         console.print(f"  [red]{e}[/red]")
         return False
 
+    cfg.scheme_name = scheme_name
     cfg.enabled_factors = factors
     cfg.weights = dict(weights)
 
@@ -493,14 +541,15 @@ def step_backtest_params(cfg: WizardConfig) -> None:
     cfg.position_sizing_method = ["equal_weight", "score_weighted", "risk_parity"][ps_choice - 1]
 
     # Backtest date range
-    console.print("  [bold]回测日期区间[/bold]")
-    console.print(f"    数据范围: {cfg.start_date} ~ {cfg.end_date}")
-    bt_start = input_value("回测起始日期 (直接回车使用数据全量)", default=cfg.backtest_start or "")
-    bt_end = input_value("回测结束日期 (直接回车使用数据全量)", default=cfg.backtest_end or "")
+    console.print("  [bold]回测区间[/bold]")
+    console.print(f"    因子数据范围: {cfg.factor_start_date} ~ {cfg.factor_end_date} (含暖机期)")
+    console.print(f"    回测评估范围: {cfg.start_date} ~ {cfg.end_date}")
+    bt_start = input_value("回测起始日期 (回车=当前)", default=cfg.start_date)
+    bt_end = input_value("回测结束日期 (回车=当前)", default=cfg.end_date)
     if bt_start:
-        cfg.backtest_start = bt_start
+        cfg.start_date = bt_start
     if bt_end:
-        cfg.backtest_end = bt_end
+        cfg.end_date = bt_end
 
 
 def get_param_summary(cfg: WizardConfig) -> dict:
@@ -523,10 +572,16 @@ def get_param_summary(cfg: WizardConfig) -> dict:
         names = [INDEX_OPTIONS.get(c, c) for c in cfg.index_codes]
         stock_range = " + ".join(names) + f" ({', '.join(cfg.index_codes)})"
 
-    return {
+    params = {
         "股票范围": stock_range,
-        "时间范围": f"{cfg.start_date} ~ {cfg.end_date}",
+        "排除ETF": "是" if cfg.exclude_etf else "否",
         "数据源": cfg.data_source,
+    }
+    if cfg.scheme_name:
+        params["方案名称"] = cfg.scheme_name
+    params["因子数据范围"] = f"{cfg.factor_start_date} ~ {cfg.factor_end_date}"
+    params["回测评估范围"] = f"{cfg.start_date} ~ {cfg.end_date}"
+    params.update({
         "刷新数据": "是" if cfg.refresh_data else "否",
         "启用因子": factor_desc,
         "因子权重": weight_desc,
@@ -535,7 +590,8 @@ def get_param_summary(cfg: WizardConfig) -> dict:
         "调仓频率": cfg.rebalance_freq,
         "风控": f"启用 (止损={cfg.stop_loss}, 止盈={cfg.take_profit})" if cfg.risk_control_enabled else "未启用",
         "仓位管理": cfg.position_sizing_method,
-    }
+    })
+    return params
 
 
 def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
@@ -584,7 +640,17 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     # Override data source if needed
-    if cfg.data_source == "tushare" and TUSHARE_TOKEN:
+    if cfg.data_source == "qmt":
+        import src.data.qmt_fetcher as qf
+        _get_index_constituents = qf.get_index_constituents
+        _get_all_stocks = qf.get_all_stocks
+        _sync_stocks_data = qf.sync_stocks_data
+        _fetch_daily_basic = qf.fetch_daily_basic
+
+        def _get_index_daily(symbol: str = "000300", start_date: str = "", end_date: str = "", **kwargs):
+            ts_code = symbol if "." in symbol else f"{symbol}.SH"
+            return qf.get_index_daily(ts_code=ts_code, start_date=start_date, end_date=end_date, **kwargs)
+    elif cfg.data_source == "tushare" and TUSHARE_TOKEN:
         import src.data.tushare_fetcher as tf
         _get_index_constituents = tf.get_index_constituents
         _get_all_stocks = tf.get_all_stocks
@@ -642,28 +708,43 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
         from src.data.tushare_fetcher import sync_adj_factor_for_stocks
         console.print("\n[bold green]▶ 同步复权因子...[/]")
         adj_saved = sync_adj_factor_for_stocks(
-            ts_codes, start_date=cfg.start_date, end_date=cfg.end_date
+            ts_codes, start_date=cfg.factor_start_date, end_date=cfg.factor_end_date
         )
         if adj_saved:
             console.print(f"  已更新 {adj_saved} 条复权因子记录")
 
     # Step 2: Data sync (always full market, universe filtering happens at load)
+    # Sync uses config.ini's wide START_DATE (20180101) regardless of user-selected
+    # backtest range — incremental sync is cheap, and wide data enables factor warmup.
     console.print("\n[bold green]▶ 同步数据...[/]")
     if cfg.refresh_data:
-        # Tushare path: date-based full-market sync (no ts_codes needed)
+        from src.config import START_DATE as SYNC_START_DATE
+
+        # Tushare/QMT path: date-based full-market sync (no ts_codes needed)
         # AKShare path: per-stock sync, still needs explicit stock list
-        if cfg.data_source == "tushare" and TUSHARE_TOKEN:
-            new_data = _sync_stocks_data(end_date=cfg.end_date, start_date=cfg.start_date)
+        if (cfg.data_source == "tushare" and TUSHARE_TOKEN) or cfg.data_source == "qmt":
+            new_data = _sync_stocks_data(end_date=cfg.factor_end_date, start_date=SYNC_START_DATE)
         else:
-            new_data = _sync_stocks_data(ts_codes, end_date=cfg.end_date)
+            new_data = _sync_stocks_data(ts_codes, end_date=cfg.factor_end_date)
         if new_data.empty:
             console.print("  数据已是最新，使用缓存")
-            df = load_daily_price(start_date=cfg.start_date, end_date=cfg.end_date)
         else:
             console.print(f"  获取 {len(new_data)} 行新数据")
-            df = load_daily_price(start_date=cfg.start_date, end_date=cfg.end_date)
-    else:
-        df = load_daily_price(start_date=cfg.start_date, end_date=cfg.end_date)
+    # Use factor date range for data loading (provides warmup history).
+    # cfg.start_date/end_date now represent backtest evaluation range only.
+    # Guard: factor range must cover backtest range.
+    if cfg.factor_end_date < cfg.end_date:
+        console.print(f"  [yellow]因子结束 ({cfg.factor_end_date}) < 回测结束 ({cfg.end_date})，自动扩展[/]")
+        cfg.factor_end_date = cfg.end_date
+    if cfg.factor_start_date > cfg.start_date:
+        console.print(f"  [yellow]因子起始 ({cfg.factor_start_date}) > 回测起始 ({cfg.start_date})，自动前移[/]")
+        cfg.factor_start_date = cfg.start_date
+    from src.config import START_DATE as LOAD_START_DATE
+    load_start = cfg.factor_start_date or LOAD_START_DATE
+    load_end = cfg.factor_end_date
+    if cfg.backtest_end and cfg.backtest_end > load_end:
+        load_end = cfg.backtest_end
+    df = load_daily_price(start_date=load_start, end_date=load_end)
 
     if df.empty:
         console.print("[red]错误：未获取到数据！[/red]")
@@ -677,9 +758,17 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
             console.print(f"[red]错误：指定的 {len(ts_codes)} 只股票无缓存数据[/red]")
             return
 
+    # Step 2.5: Exclude ETFs if configured
+    if cfg.exclude_etf:
+        from src.grid.grid_etf import is_etf
+        before = df["ts_code"].nunique()
+        df = df[~df["ts_code"].apply(is_etf)]
+        after = df["ts_code"].nunique()
+        console.print(f"  ETF过滤: {before} → {after} 只（排除 {before - after} 只ETF）")
+
     # Step 3: Clean (includes stock quality filtering)
     console.print("\n[bold green]▶ 清洗数据 & 过滤低质量股票...[/]")
-    df, report = clean_pipeline(df, filter_stocks=True, end_date=cfg.end_date)
+    df, report = clean_pipeline(df, filter_stocks=True, end_date=cfg.factor_end_date)
     filter_info = report.get("filter", {})
     if filter_info:
         total_removed = filter_info.get("total_removed", 0)
@@ -702,9 +791,9 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
 
     # Step 4: Fundamentals
     console.print("\n[bold green]▶ 获取基本面数据...[/]")
-    basic_df = load_daily_basic(start_date=cfg.start_date, end_date=cfg.end_date)
+    basic_df = load_daily_basic(start_date=cfg.factor_start_date, end_date=cfg.factor_end_date)
     if basic_df.empty:
-        basic_df = _fetch_daily_basic(ts_codes, start_date=cfg.start_date, end_date=cfg.end_date)
+        basic_df = _fetch_daily_basic(ts_codes, start_date=cfg.factor_start_date, end_date=cfg.factor_end_date)
         if not basic_df.empty:
             save_daily_basic(basic_df)
     if not basic_df.empty:
@@ -712,17 +801,18 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
 
     # Step 4b: Fina Indicator (ROE, ROE YoY)
     needs_fina = any(f in cfg.enabled_factors for f in ["roe_yoy_rank"])
-    if needs_fina and cfg.data_source == "tushare":
+    if needs_fina and cfg.data_source in ("tushare", "qmt"):
         console.print("\n[bold green]▶ 获取ROE基本面数据...[/]")
+        import src.data.tushare_fetcher as tf  # fina data stays on Tushare (qmt mode: tf not bound above)
         from src.data.storage import load_fina_indicator, save_fina_indicator, merge_fina_indicator
-        fina_df = load_fina_indicator(ts_codes=ts_codes, start_date=cfg.start_date, end_date=cfg.end_date)
+        fina_df = load_fina_indicator(ts_codes=ts_codes, start_date=cfg.factor_start_date, end_date=cfg.factor_end_date)
         if fina_df.empty:
-            fina_df = tf.fetch_fina_indicator(ts_codes, start_date=cfg.start_date, end_date=cfg.end_date)
+            fina_df = tf.fetch_fina_indicator(ts_codes, start_date=cfg.factor_start_date, end_date=cfg.factor_end_date)
             if not fina_df.empty:
                 saved = save_fina_indicator(fina_df)
                 console.print(f"  获取并保存 {saved} 条ROE数据")
                 # Re-load from DB to get consistent column names
-                fina_df = load_fina_indicator(ts_codes=ts_codes, start_date=cfg.start_date, end_date=cfg.end_date)
+                fina_df = load_fina_indicator(ts_codes=ts_codes, start_date=cfg.factor_start_date, end_date=cfg.factor_end_date)
         if not fina_df.empty:
             df = merge_fina_indicator(df, fina_df)
             console.print(f"  合并ROE数据完成")
@@ -798,26 +888,30 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
         console.print("\n[bold green]▶ 运行回测...[/]")
 
         # Filter by backtest date range (after factor calculation for warmup)
-        bt_df = df
-        if cfg.backtest_start or cfg.backtest_end:
-            bt_df = df.copy()
-            if cfg.backtest_start:
-                bt_df = bt_df[bt_df["trade_date"] >= cfg.backtest_start]
-            if cfg.backtest_end:
-                bt_df = bt_df[bt_df["trade_date"] <= cfg.backtest_end]
-            bt_dates = bt_df["trade_date"].unique()
-            if len(bt_dates) == 0:
-                data_range = f"{df['trade_date'].min()} ~ {df['trade_date'].max()}"
-                console.print(f"[red]回测区间 {cfg.backtest_start or ''} ~ {cfg.backtest_end or ''} 无数据[/red]")
-                console.print(f"[yellow]数据实际范围: {data_range}[/yellow]")
+        # Default to the actual data range if not explicitly set
+        data_min = df["trade_date"].min()
+        data_max = df["trade_date"].max()
+        bt_start = cfg.backtest_start or data_min
+        bt_end = cfg.backtest_end or data_max
+        bt_df = df[(df["trade_date"] >= bt_start) & (df["trade_date"] <= bt_end)].copy()
+        bt_dates = sorted(bt_df["trade_date"].unique())
+        if len(bt_dates) == 0:
+            console.print(f"[red]回测区间 {bt_start} ~ {bt_end} 无数据[/red]")
+            console.print(f"[yellow]数据实际范围: {data_min} ~ {data_max}[/yellow]")
+            return
+        if "total_score" in bt_df.columns:
+            valid_scores = bt_df["total_score"].notna().sum()
+            if valid_scores == 0:
+                console.print(f"[red]回测区间内无有效评分数据（基本面数据可能缺失）[/red]")
+                console.print(f"[yellow]建议扩大数据范围或使用不依赖基本面的因子[/yellow]")
                 return
-            if "total_score" in bt_df.columns:
-                valid_scores = bt_df["total_score"].notna().sum()
-                if valid_scores == 0:
-                    console.print(f"[red]回测区间内无有效评分数据（基本面数据可能缺失）[/red]")
-                    console.print(f"[yellow]建议扩大数据范围或使用不依赖基本面的因子[/yellow]")
-                    return
-            console.print(f"  回测区间: {bt_dates.min()} ~ {bt_dates.max()} ({len(bt_dates)} 个交易日)")
+        console.print(f"  回测区间: {bt_dates[0]} ~ {bt_dates[-1]} ({len(bt_dates)} 个交易日)")
+        # Trim to backtest evaluation range
+        if data_min < cfg.start_date:
+            console.print(f"  [dim]因子 rolling window: 数据从 {data_min} 开始，因子有效值从 {cfg.start_date} 起，回测取 {bt_start}~{bt_end}[/dim]")
+        # Store resolved values for benchmark and report
+        cfg.backtest_start = bt_start
+        cfg.backtest_end = bt_end
 
         # Add uniform score for custom stock pool or when scoring was skipped
         if "total_score" not in bt_df.columns:
@@ -850,8 +944,8 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
             bm_symbol = cfg.index_codes[0]
         benchmark_df = _get_index_daily(
             symbol=bm_symbol,
-            start_date=cfg.backtest_start or cfg.start_date,
-            end_date=cfg.backtest_end or cfg.end_date,
+            start_date=bt_start,
+            end_date=bt_end,
         )
 
         bt_result = engine.run(bt_df, benchmark_df=benchmark_df)
@@ -918,7 +1012,7 @@ def _save_results(
 
     # Top picks
     if not top_picks.empty:
-        lines.append(f"\n## Top {len(top_picks)} 股票\n")
+        lines.append(f"\n## 最新期 Top {len(top_picks)}（{top_picks['trade_date'].iloc[0] if 'trade_date' in top_picks.columns else ''}）\n")
         lines.append("| 排名 | 编码 | 名称 | 综合得分 |")
         lines.append("|------|------|------|----------|")
         for i, (_, row) in enumerate(top_picks.iterrows(), 1):
