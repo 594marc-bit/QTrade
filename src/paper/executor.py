@@ -44,10 +44,15 @@ class PaperExecutor:
 
         一次性批量取价，再逐个成交。返回 ``{filled, rejected}`` 统计。
         任何单信号失败（取价失败/现金不足/T+1）只 reject 该信号，不影响其它。
+
+        SELL 优先于 BUY 处理，确保卖出资金先到账再用于买入。
         """
         stats = {"filled": 0, "rejected": 0}
         if not signals:
             return stats
+
+        # SELL first, BUY second — free up cash before spending
+        signals = sorted(signals, key=lambda s: 0 if s["action"] == "SELL" else 1)
 
         # 一次批量取价（fallback 链）
         ts_codes = [s["ts_code"] for s in signals]

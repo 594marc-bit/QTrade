@@ -16,6 +16,7 @@ from typing import Any
 import pandas as pd
 
 from src.live.signal_generator import SignalGenerator
+from src.data.storage import save_trade_signals
 from src.paper import storage
 from src.paper.executor import PaperExecutor
 from src.paper.fetchers import FallbackChain
@@ -68,6 +69,8 @@ def _make_generator(plan: dict[str, Any]) -> SignalGenerator:
         total_capital=plan["total_capital"],
         holdings_provider=make_paper_holdings_provider(plan["id"]),
         exclude_etf=bool(plan.get("exclude_etf", 1)),
+        exclude_star=bool(plan.get("exclude_star", 1)),
+        index_codes=plan.get("index_codes"),
     )
 
 
@@ -118,6 +121,66 @@ def _resolve_signals(
 
 
 # ---------------------------------------------------------------------------
+# live tick
+# ---------------------------------------------------------------------------
+
+def run_live_tick(
+    plan: dict[str, Any],
+    trade_date: str,
+    *,
+    now_ts: str | None = None,
+) -> dict[str, Any]:
+    """live 模式单 tick：跑因子管线 → diff vs 本系统记录持仓 → 写 trade_signals。
+
+    与 paper 模式的区别：不做模拟成交/费用/T+1（QMT 负责执行），生成信号后把
+    新目标写回 ``paper_holdings``（本系统记录持仓），防止下一 tick 重复发 BUY。
+    """
+    now = dt.datetime.now()
+    now_ts = now_ts or now.strftime("%Y-%m-%d %H:%M:%S")
+
+    gen = _make_generator(plan)
+    try:
+        signals, top_picks, latest_date = gen.compute_signals(trade_date)
+    except Exception as e:
+        storage.update_plan_runtime(plan["id"], error_msg=f"选股失败: {e}",
+                                    last_run_at=now_ts)
+        return {"error": str(e)}
+
+    # 辅助分析信息：plan 名 + 每只得分
+    score_map = {row["ts_code"]: row.get("total_score") for _, row in top_picks.iterrows()}
+    for s in signals:
+        s["plan_name"] = plan["name"]
+        s["score"] = score_map.get(s["ts_code"])
+
+    saved = 0
+    if signals:
+        saved = save_trade_signals(pd.DataFrame(signals))
+        try:
+            from src.live.server import broadcast_signals_sync
+            broadcast_signals_sync(signals)
+        except Exception as e:
+            print(f"[live] WS broadcast skipped: {e}")
+
+    # 写回目标持仓（本系统记录持仓）
+    price_map = _extract_price_map(gen._df, latest_date)
+    holdings = []
+    for _, row in top_picks.iterrows():
+        code = row["ts_code"]
+        shares = gen._calc_quantity(top_picks, code)
+        price = price_map.get(code)
+        holdings.append({
+            "ts_code": code,
+            "shares": shares,
+            "avg_cost": price or 0.0,
+            "last_price": price,
+        })
+    storage.set_target_holdings(plan["id"], holdings)
+    storage.update_plan_runtime(plan["id"], last_run_at=now_ts,
+                                last_signal_date=trade_date)
+    return {"saved": saved, "signals": len(signals)}
+
+
+# ---------------------------------------------------------------------------
 # tick 主入口
 # ---------------------------------------------------------------------------
 
@@ -144,6 +207,10 @@ def run_tick(
         return {"skipped": f"status={plan['status']}"}
     if not is_trading_day(trade_date):
         return {"skipped": "non-trading day"}
+
+    # live 模式：走 live 信号生成路径（写 trade_signals，不模拟成交）
+    if plan.get("mode") == "live":
+        return run_live_tick(plan, trade_date, now_ts=now_ts)
 
     # T+1 rollover：新交易日解锁
     last_sig = plan.get("last_signal_date")

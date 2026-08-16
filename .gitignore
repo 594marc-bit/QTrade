@@ -1,8 +1,18 @@
 # Local configuration (contains API tokens)
 config.ini
 
+# Trader local config (contains API key)
+trader/config_windows.json
+
+# Trader downloaded reference assets (browser save)
+trader/example/
+
 # Environment variables (API tokens)
 .env
+
+# Runtime logs
+logs/
+trader/logs/
 
 # Python
 .venv/

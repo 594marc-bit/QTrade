@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import re
 import threading
+from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -212,6 +214,21 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # ---- PID 互斥锁：防止多实例重复执行 -------
+    import atexit
+    _pid_file = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "data" / "paper_worker.pid"
+    if _pid_file.exists():
+        old_pid = _pid_file.read_text().strip()
+        try:
+            os.kill(int(old_pid), 0)  # 信号 0 只检查进程是否存在
+            print(f"Worker 已在运行 (PID {old_pid})，退出。如需重启请先 kill {old_pid}")
+            return
+        except (OSError, ValueError):
+            _pid_file.unlink(missing_ok=True)  # 旧 PID 已死，清理
+    _pid_file.write_text(str(os.getpid()))
+    atexit.register(lambda: _pid_file.unlink(missing_ok=True))
+
     PaperWorker().run()
 
 

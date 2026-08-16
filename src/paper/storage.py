@@ -43,8 +43,11 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             price_source          TEXT DEFAULT 'auto',
             slippage              REAL DEFAULT 0.0,
             exclude_etf           INTEGER DEFAULT 1,
+            exclude_star          INTEGER DEFAULT 1,
             status                TEXT DEFAULT 'stopped'
                                   CHECK(status IN ('stopped','running','paused')),
+            mode                  TEXT NOT NULL DEFAULT 'paper'
+                                  CHECK(mode IN ('paper','live')),
             cash                  REAL DEFAULT 0,
             last_run_at           TEXT,
             last_signal_date      TEXT,
@@ -141,6 +144,16 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE paper_plans ADD COLUMN exclude_etf INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    # 迁移：为既有库幂等补 exclude_star 列
+    try:
+        conn.execute("ALTER TABLE paper_plans ADD COLUMN exclude_star INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+    # 迁移：为既有库幂等补 mode 列（paper/live 分派）
+    try:
+        conn.execute("ALTER TABLE paper_plans ADD COLUMN mode TEXT NOT NULL DEFAULT 'paper'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
 
 
@@ -160,7 +173,8 @@ def ensure_tables() -> None:
 PLAN_FIELDS = (
     "name", "scheme_name", "index_codes", "total_capital", "start_date",
     "top_n", "position_sizing", "uses_intraday_factors", "freq_type",
-    "freq_spec", "price_source", "slippage", "exclude_etf",
+    "freq_spec", "price_source", "slippage", "exclude_etf", "exclude_star",
+    "mode",
 )
 
 
@@ -178,6 +192,8 @@ def create_plan(
     price_source: str = "auto",
     slippage: float = 0.0,
     exclude_etf: int = 1,
+    exclude_star: int = 1,
+    mode: str = "paper",
 ) -> int:
     """插入一个新方案，返回 plan id。cash 初始化 = total_capital。"""
     conn = get_connection()
@@ -188,7 +204,8 @@ def create_plan(
                 VALUES ({", ".join(["?"] * len(PLAN_FIELDS))}, ?)""",
             (name, scheme_name, index_codes, total_capital, start_date,
              top_n, position_sizing, uses_intraday_factors, freq_type,
-             freq_spec, price_source, slippage, exclude_etf, total_capital),
+             freq_spec, price_source, slippage, exclude_etf, exclude_star,
+             mode, total_capital),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -388,6 +405,32 @@ def delete_holding(plan_id: int, ts_code: str) -> None:
             (plan_id, ts_code),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def set_target_holdings(plan_id: int, holdings: list[dict[str, Any]]) -> int:
+    """用目标持仓整体替换某方案的 paper_holdings（live 模式记录持仓用）。
+
+    ``holdings`` 每项含 ``ts_code`` / ``shares`` / ``avg_cost`` / ``last_price``；
+    写入时 free_shares=shares、t1_shares=0（live 不模拟 T+1 锁定）。
+    """
+    conn = get_connection()
+    try:
+        _ensure_tables(conn)
+        conn.execute("DELETE FROM paper_holdings WHERE plan_id = ?", (plan_id,))
+        for h in holdings:
+            shares = int(h["shares"])
+            conn.execute(
+                """INSERT INTO paper_holdings
+                   (plan_id, ts_code, shares, t1_shares, free_shares, avg_cost,
+                    last_price, updated_at)
+                   VALUES (?, ?, ?, 0, ?, ?, ?, datetime('now','localtime'))""",
+                (plan_id, h["ts_code"], shares, shares,
+                 float(h.get("avg_cost", 0.0) or 0.0), h.get("last_price")),
+            )
+        conn.commit()
+        return len(holdings)
     finally:
         conn.close()
 
@@ -655,7 +698,7 @@ def append_snapshot(
         if snapshot_ts is None:
             snapshot_ts_sql = "datetime('now','localtime')"
             cur = conn.execute(
-                f"""INSERT INTO paper_equity_history
+                f"""INSERT OR REPLACE INTO paper_equity_history
                     (plan_id, trade_date, cash, holdings_value, total_equity,
                      nav, daily_return, n_positions, snapshot_ts)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, {snapshot_ts_sql})""",
@@ -664,7 +707,7 @@ def append_snapshot(
             )
         else:
             cur = conn.execute(
-                """INSERT INTO paper_equity_history
+                """INSERT OR REPLACE INTO paper_equity_history
                    (plan_id, trade_date, cash, holdings_value, total_equity,
                     nav, daily_return, n_positions, snapshot_ts)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",

@@ -113,6 +113,7 @@ class WizardConfig:
         self.scheme_name: str | None = None
         self.auto_confirm: bool = False
         self.exclude_etf: bool = True
+        self.exclude_star: bool = True
         self.stock_codes: list[str] = []
 
 
@@ -163,12 +164,20 @@ def step_index(cfg: WizardConfig) -> None:
         console.print(f"  [yellow]未选择，使用默认: 沪深300[/yellow]")
 
     # ETF exclusion
-    if confirm("是否排除ETF（51xxxx.SH / 159xxx.SZ）？", default=True):
+    if confirm("是否排除ETF/基金？", default=True):
         cfg.exclude_etf = True
-        console.print("  [green]将排除ETF[/green]")
+        console.print("  [green]将排除ETF/基金[/green]")
     else:
         cfg.exclude_etf = False
-        console.print("  [yellow]将包含ETF[/yellow]")
+        console.print("  [yellow]将包含ETF/基金[/yellow]")
+
+    # STAR board exclusion
+    if confirm("是否排除科创板（688xxx.SH）？", default=True):
+        cfg.exclude_star = True
+        console.print("  [green]将排除科创板[/green]")
+    else:
+        cfg.exclude_star = False
+        console.print("  [yellow]将包含科创板[/yellow]")
 
 
 def step_date_range(cfg: WizardConfig) -> None:
@@ -575,6 +584,7 @@ def get_param_summary(cfg: WizardConfig) -> dict:
     params = {
         "股票范围": stock_range,
         "排除ETF": "是" if cfg.exclude_etf else "否",
+        "排除科创板": "是" if cfg.exclude_star else "否",
         "数据源": cfg.data_source,
     }
     if cfg.scheme_name:
@@ -764,7 +774,14 @@ def run_pipeline(cfg: WizardConfig, output_dir: Path | None = None) -> None:
         before = df["ts_code"].nunique()
         df = df[~df["ts_code"].apply(is_etf)]
         after = df["ts_code"].nunique()
-        console.print(f"  ETF过滤: {before} → {after} 只（排除 {before - after} 只ETF）")
+        console.print(f"  ETF过滤: {before} → {after} 只（排除 {before - after} 只ETF/基金）")
+
+    # Exclude STAR board if configured
+    if cfg.exclude_star:
+        before = df["ts_code"].nunique()
+        df = df[~df["ts_code"].str.startswith("688")]
+        after = df["ts_code"].nunique()
+        console.print(f"  科创板过滤: {before} → {after} 只（排除 {before - after} 只科创板）")
 
     # Step 3: Clean (includes stock quality filtering)
     console.print("\n[bold green]▶ 清洗数据 & 过滤低质量股票...[/]")

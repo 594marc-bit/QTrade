@@ -122,21 +122,25 @@ def filter_low_quality_stocks(
 
 
 def _filter_codes_by_name_from_cache(df: pd.DataFrame, pattern: str) -> set[str]:
-    """Try to find stock codes matching a name pattern using cached stock_basic data.
+    """Find stock codes matching a name pattern using the stock-list cache.
+
+    Routes through :func:`src.data.tushare_fetcher.get_all_stocks` so the cache
+    expiry (``CACHE_EXPIRE_DAYS``) is honored — a stale name list (e.g. a stock
+    that got ST-ed after the snapshot) gets refreshed automatically instead of
+    silently slipping through. Falls back to an empty set on any failure (never
+    breaks selection).
 
     Returns set of ts_codes that match the pattern.
     """
     try:
-        import pickle
-        from pathlib import Path
-        cache_path = Path(__file__).parent.parent.parent / "data" / "all_stocks_tushare.pkl"
-        if cache_path.exists():
-            with open(cache_path, "rb") as f:
-                basic = pickle.load(f)
-            if "name" in basic.columns and "ts_code" in basic.columns:
-                bad_codes = set(basic.loc[basic["name"].str.contains(pattern, na=False), "ts_code"])
-                existing = bad_codes & set(df["ts_code"].unique())
-                return existing
+        from src.data.tushare_fetcher import get_all_stocks
+
+        basic = get_all_stocks()
+        if basic is None or getattr(basic, "empty", True):
+            return set()
+        if "name" in basic.columns and "ts_code" in basic.columns:
+            bad_codes = set(basic.loc[basic["name"].str.contains(pattern, na=False), "ts_code"])
+            return bad_codes & set(df["ts_code"].unique())
     except Exception:
         pass
     return set()

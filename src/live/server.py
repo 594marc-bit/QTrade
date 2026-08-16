@@ -872,6 +872,10 @@ async def paper_create_plan(request: Request):
     if uses_intraday is None:
         uses_intraday = 1 if detect_uses_intraday_factors(scheme_name) else 0
 
+    mode = body.get("mode", "paper")
+    if mode not in ("paper", "live"):
+        raise HTTPException(status_code=400, detail="mode 必须是 paper 或 live")
+
     pid = ps.create_plan(
         name=body["name"], scheme_name=scheme_name, total_capital=total_capital,
         start_date=str(body["start_date"]), freq_type=freq_type, freq_spec=freq_spec,
@@ -882,9 +886,31 @@ async def paper_create_plan(request: Request):
         price_source=body.get("price_source", "auto"),
         slippage=float(body.get("slippage", 0.0)),
         exclude_etf=int(body.get("exclude_etf", 1)),
+        exclude_star=int(body.get("exclude_star", 1)),
+        mode=mode,
     )
-    logger.info(f"Paper plan created: id={pid} scheme={scheme_name}")
+    logger.info(f"Paper plan created: id={pid} scheme={scheme_name} mode={mode}")
     return {"ok": True, "plan_id": pid}
+
+
+@app.post("/api/paper/plans/{plan_id}/run")
+def paper_run_now(plan_id: int):
+    """手动立即执行一次 tick（live 方案写 trade_signals，paper 方案模拟成交）。"""
+    from src.paper import storage as ps
+    from src.paper import tick
+    from src.paper.fetchers import get_fetcher
+    import datetime as _dt
+
+    plan = ps.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail=f"plan {plan_id} not found")
+    trade_date = _dt.datetime.now().strftime("%Y%m%d")
+    if not tick.is_trading_day(trade_date):
+        return {"ok": True, "skipped": "non-trading day"}
+    fetcher = get_fetcher(plan.get("price_source") or "auto")
+    result = tick.run_tick(plan_id, fetcher)
+    logger.info(f"Paper plan {plan_id} run-now: {result}")
+    return {"ok": True, "plan_id": plan_id, "mode": plan.get("mode"), "result": result}
 
 
 @app.post("/api/paper/plans/{plan_id}/{action}")
@@ -991,6 +1017,22 @@ def paper_holdings_live(plan_id: int):
             # Any holding that didn't get a live price falls back to stored last_price
             for h in holdings:
                 h.setdefault("price_mode", "close")
+    elif holdings:
+        # Non-trading hours: refresh from daily_price latest close (DB last_price may be stale)
+        from src.data.storage import get_connection as _get_conn
+        conn = _get_conn()
+        try:
+            for h in holdings:
+                row = conn.execute(
+                    'SELECT close FROM daily_price WHERE ts_code=? ORDER BY trade_date DESC LIMIT 1',
+                    (h['ts_code'],)
+                ).fetchone()
+                if row and row[0]:
+                    h['last_price'] = round(row[0], 4)
+                h['price_source'] = 'daily_close'
+                h['price_mode'] = 'close'
+        finally:
+            conn.close()
 
     # Ensure all holdings have price_mode set
     for h in holdings:

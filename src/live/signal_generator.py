@@ -4,6 +4,7 @@ Reuses the existing factor pipeline and scheme configuration to produce
 BUY/SELL signals by diffing new stock selection against current target holdings.
 """
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,35 @@ from src.live.portfolio_tracker import get_current_target_portfolio, save_target
 from src.scheme import load_scheme
 
 
+def _parse_index_codes(index_codes) -> list[str] | None:
+    """Normalize ``index_codes`` into a list of index codes, or None for full market.
+
+    Accepts ``None`` (full market), a list/tuple, a JSON list string
+    (e.g. ``'["000300", "000905"]'``), or a comma-separated string
+    (e.g. ``"000300,000905"``). Returns ``None`` for an empty/absent value so
+    callers treat it as "no universe restriction".
+    """
+    if index_codes is None:
+        return None
+    if isinstance(index_codes, (list, tuple)):
+        codes = [str(c).strip() for c in index_codes if str(c).strip()]
+    elif isinstance(index_codes, str):
+        s = index_codes.strip()
+        if not s:
+            return None
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                codes = [str(c).strip() for c in parsed if str(c).strip()]
+            except Exception:
+                codes = [x.strip() for x in s.strip("[]").split(",") if x.strip()]
+        else:
+            codes = [x.strip() for x in s.split(",") if x.strip()]
+    else:
+        return None
+    return codes or None
+
+
 class SignalGenerator:
     """Generates live trading signals from the factor pipeline.
 
@@ -71,12 +101,17 @@ class SignalGenerator:
         position_sizing: str = "equal_weight",
         holdings_provider=None,
         exclude_etf: bool = True,
+        exclude_star: bool = True,
+        index_codes=None,
     ):
         self.scheme_name = scheme_name
         self.top_n = top_n
         self.total_capital = total_capital
         self.position_sizing = position_sizing
         self.exclude_etf = exclude_etf
+        self.exclude_star = exclude_star
+        # Universe restriction: None = full market; list = union of index constituents
+        self.index_codes = _parse_index_codes(index_codes)
 
         # Diff 的持仓数据源：默认读 portfolio_snapshots（live 路径行为不变）；
         # paper 传入读 paper_holdings（实际虚拟持仓）的 provider。
@@ -215,6 +250,37 @@ class SignalGenerator:
                 print(f"[SignalGenerator] Excluded {before - after} ETFs "
                       f"({after} stocks remaining)")
 
+        # Exclude STAR board (科创板 688xxx.SH) if configured
+        if self.exclude_star:
+            before = df["ts_code"].nunique()
+            df = df[~df["ts_code"].str.startswith("688")]
+            after = df["ts_code"].nunique()
+            if before != after:
+                print(f"[SignalGenerator] Excluded {before - after} STAR board stocks "
+                      f"({after} stocks remaining)")
+
+        # Restrict to configured index universe (index_codes); "all" or None = full market
+        if self.index_codes and "all" not in self.index_codes:
+            from src.data.tushare_fetcher import get_index_constituents
+
+            codes: set[str] = set()
+            for ic in self.index_codes:
+                try:
+                    const = get_index_constituents(ic)
+                    if const is not None and not const.empty and "ts_code" in const.columns:
+                        codes.update(str(c) for c in const["ts_code"].tolist())
+                except Exception as e:
+                    print(f"[SignalGenerator] index {ic} constituents unavailable: {e}")
+            if codes:
+                before = df["ts_code"].nunique()
+                df = df[df["ts_code"].isin(codes)]
+                after = df["ts_code"].nunique()
+                print(f"[SignalGenerator] Universe restricted to {self.index_codes}: "
+                      f"{before} -> {after} stocks")
+            else:
+                print(f"[SignalGenerator] WARNING: index_codes={self.index_codes} "
+                      f"resolved to no constituents; keeping full market")
+
         return df
 
     def _calculate_factors(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -278,19 +344,7 @@ class SignalGenerator:
 
         signals = []
 
-        # BUY: stocks in new selection but not currently held
-        for code in new_codes - current_codes:
-            quantity = self._calc_quantity(top_picks, code)
-            signals.append({
-                "ts_code": code,
-                "action": "BUY",
-                "quantity": quantity,
-                "price_type": "MKT",
-                "scheme_name": self.scheme_name,
-                "rebalance_date": date,
-            })
-
-        # SELL: stocks currently held but not in new selection
+        # SELL first: free up cash before buying (funding order)
         for code in current_codes - new_codes:
             # Sell the full position from snapshot
             existing = current[current["ts_code"] == code]
@@ -298,6 +352,18 @@ class SignalGenerator:
             signals.append({
                 "ts_code": code,
                 "action": "SELL",
+                "quantity": quantity,
+                "price_type": "MKT",
+                "scheme_name": self.scheme_name,
+                "rebalance_date": date,
+            })
+
+        # BUY: stocks in new selection but not currently held
+        for code in new_codes - current_codes:
+            quantity = self._calc_quantity(top_picks, code)
+            signals.append({
+                "ts_code": code,
+                "action": "BUY",
                 "quantity": quantity,
                 "price_type": "MKT",
                 "scheme_name": self.scheme_name,

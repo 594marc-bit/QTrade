@@ -125,7 +125,12 @@
     </div>
     <div style="margin-top:4px">
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt);margin:0">
-        <input type="checkbox" name="exclude_etf" value="1" checked style="width:auto;margin:0"> 排除ETF（51xxxx.SH / 159xxx.SZ）
+        <input type="checkbox" name="exclude_etf" value="1" checked style="width:auto;margin:0"> 排除ETF/基金
+      </label>
+    </div>
+    <div style="margin-top:2px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt);margin:0">
+        <input type="checkbox" name="exclude_star" value="1" checked style="width:auto;margin:0"> 排除科创板（688xxx.SH）
       </label>
     </div>
     <div class="row2" style="grid-template-columns:1fr 1fr">
@@ -205,7 +210,7 @@ function renderDetail(d, eq, hol, tx){
     <div class="controls">
       <div><div class="muted">${p.name}</div>
         <span class="badge b-${p.status}">${p.status}</span>
-        <span class="muted"> · ${p.scheme_name} · ${p.freq_type}/${p.freq_spec} · 起始 ${p.start_date} · ${p.exclude_etf ? '排除ETF' : '含ETF'}</span></div>
+        <span class="muted"> · ${p.scheme_name} · ${p.freq_type}/${p.freq_spec} · 起始 ${p.start_date} · ${p.exclude_etf ? '排除ETF' : '含ETF'} · ${p.exclude_star ? '排除科创' : '含科创'}</span></div>
       <span style="flex:1"></span>
       ${statusBtn}
       <button class="danger" onclick="del()">删除</button>
@@ -318,6 +323,7 @@ $('newForm').onsubmit = async function(e){
   body.total_capital = Number(body.total_capital);
   body.top_n = Number(body.top_n)||10;
   body.exclude_etf = body.exclude_etf === '1' ? 1 : 0;
+  body.exclude_star = body.exclude_star === '1' ? 1 : 0;
   body.start_date = (body.start_date||'').replace(/-/g,'');
   try{ const r = await api('/api/paper/plans',{method:'POST',
        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

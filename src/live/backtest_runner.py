@@ -99,6 +99,7 @@ def _run(job_id: str, config: dict):
         cfg.max_drawdown_stop = config.get("max_drawdown_stop", -0.20)
         cfg.cooldown_days = config.get("cooldown_days", 5)
         cfg.exclude_etf = config.get("exclude_etf", True)
+        cfg.exclude_star = config.get("exclude_star", True)
         cfg.position_sizing_method = config.get("position_sizing_method", "equal_weight")
 
         # Scheme or manual factors
@@ -143,6 +144,13 @@ def _run(job_id: str, config: dict):
             df = df[~df["ts_code"].apply(is_etf)]
             after = df["ts_code"].nunique()
             _update(job_id, 28, f"排除ETF: {before}→{after} 只")
+
+        # Exclude STAR board if configured
+        if cfg.exclude_star:
+            before = df["ts_code"].nunique()
+            df = df[~df["ts_code"].str.startswith("688")]
+            after = df["ts_code"].nunique()
+            _update(job_id, 29, f"排除科创板: {before}→{after} 只")
 
         # Clean
         _update(job_id, 30, "清洗数据...")
@@ -285,6 +293,7 @@ def _run(job_id: str, config: dict):
             f"- 仓位管理: {config.get('position_sizing_method', 'equal_weight')}",
             f"- 风控: {'启用' if config.get('risk_control_enabled') else '未启用'}",
             f"- 排除ETF: {'是' if config.get('exclude_etf', True) else '否'}",
+            f"- 排除科创板: {'是' if config.get('exclude_star', True) else '否'}",
             "",
             "## 回测指标",
             f"- 年化收益率: {m.get('annual_return', 0):.2%}",

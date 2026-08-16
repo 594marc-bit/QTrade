@@ -709,6 +709,8 @@ def _ensure_trade_signals_table(conn: sqlite3.Connection):
             price_type      TEXT DEFAULT 'MKT' CHECK(price_type IN ('MKT', 'LIMIT')),
             limit_price     REAL,
             scheme_name     TEXT,
+            plan_name       TEXT,
+            score           REAL,
             rebalance_date  TEXT NOT NULL,
             status          TEXT DEFAULT 'pending'
                             CHECK(status IN ('pending','sent','filled','partial','rejected','cancelled')),
@@ -721,6 +723,15 @@ def _ensure_trade_signals_table(conn: sqlite3.Connection):
             filled_at       TEXT
         )
     """)
+    # 迁移：为既有库幂等补 plan_name / score 列（辅助分析信息）
+    try:
+        conn.execute("ALTER TABLE trade_signals ADD COLUMN plan_name TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE trade_signals ADD COLUMN score REAL")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
 
 
@@ -740,7 +751,8 @@ def save_trade_signals(df: pd.DataFrame) -> int:
     _ensure_trade_signals_table(conn)
 
     db_cols = ["ts_code", "action", "quantity", "price_type", "limit_price",
-               "scheme_name", "rebalance_date", "cancel_signal_id"]
+               "scheme_name", "plan_name", "score", "rebalance_date",
+               "cancel_signal_id"]
     available = [c for c in db_cols if c in df.columns]
     placeholders = ", ".join(["?"] * len(available))
     col_names = ", ".join(available)
